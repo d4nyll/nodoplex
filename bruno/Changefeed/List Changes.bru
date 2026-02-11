@@ -1,0 +1,17 @@
+meta {
+  name: List Changes
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/changes
+  body: none
+  auth: none
+}
+
+params:query {
+  type: feature
+  ~since: 0
+  ~limit: 50
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Create GitRef
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/nodes
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "type": "gitref",
+    "repo": "d4nyll/nodoplex",
+    "refType": "branch",
+    "ref": "feat/oidc",
+    "url": "https://github.com/d4nyll/nodoplex/tree/feat/oidc",
+    "message": "Feature branch for OIDC implementation"
+  }
+}

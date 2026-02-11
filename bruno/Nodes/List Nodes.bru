@@ -1,0 +1,19 @@
+meta {
+  name: List Nodes
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/nodes
+  body: none
+  auth: none
+}
+
+params:query {
+  ~type: feature
+  ~status: backlog
+  ~search: SSO
+  ~offset: 0
+  ~limit: 50
+}

@@ -1,0 +1,728 @@
+openapi: "3.0.3"
+info:
+  title: Nodoplex API
+  description: >
+    Graph-based project management platform. All project entities (visions,
+    goals, features, requirements, tasks, git refs) are stored as nodes in a
+    Neo4j graph connected by directed edges, giving every stakeholder a single
+    shared view of how work connects to company goals.
+  version: "0.1.0"
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+paths:
+  # ── Nodes CRUD ──────────────────────────────────────────────
+  /nodes:
+    post:
+      operationId: createNode
+      summary: Create a node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNodeRequest"
+      responses:
+        "201":
+          description: Node created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+    get:
+      operationId: listNodes
+      summary: List and filter nodes
+      parameters:
+        - name: type
+          in: query
+          schema:
+            $ref: "#/components/schemas/NodeType"
+        - name: status
+          in: query
+          description: Filter tasks by status
+          schema:
+            $ref: "#/components/schemas/TaskStatus"
+        - name: search
+          in: query
+          description: Full-text search on title and description
+          schema:
+            type: string
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: List of nodes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /nodes/{id}:
+    parameters:
+      - $ref: "#/components/parameters/NodeId"
+
+    get:
+      operationId: getNode
+      summary: Get a node by ID with its direct relationships
+      responses:
+        "200":
+          description: Node with relationships
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeWithRelationships"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      operationId: updateNode
+      summary: Partially update a node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNodeRequest"
+      responses:
+        "200":
+          description: Updated node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      operationId: deleteNode
+      summary: Delete a node and all its edges
+      responses:
+        "204":
+          description: Node deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Edges ───────────────────────────────────────────────────
+  /edges:
+    post:
+      operationId: createEdge
+      summary: Create an edge between two nodes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEdgeRequest"
+      responses:
+        "201":
+          description: Edge created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Edge"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      operationId: deleteEdge
+      summary: Delete an edge between two nodes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteEdgeRequest"
+      responses:
+        "204":
+          description: Edge deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Graph Traversal ─────────────────────────────────────────
+  /nodes/{id}/children:
+    parameters:
+      - $ref: "#/components/parameters/NodeId"
+    get:
+      operationId: getChildren
+      summary: Get direct children of a node
+      responses:
+        "200":
+          description: List of child nodes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeArray"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /nodes/{id}/parents:
+    parameters:
+      - $ref: "#/components/parameters/NodeId"
+    get:
+      operationId: getParents
+      summary: Get direct parents of a node
+      responses:
+        "200":
+          description: List of parent nodes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeArray"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /nodes/{id}/subtree:
+    parameters:
+      - $ref: "#/components/parameters/NodeId"
+    get:
+      operationId: getSubtree
+      summary: Get the full descendant tree of a node (recursive)
+      responses:
+        "200":
+          description: Tree of descendant nodes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TreeNode"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /nodes/{id}/lineage:
+    parameters:
+      - $ref: "#/components/parameters/NodeId"
+    get:
+      operationId: getLineage
+      summary: Trace ancestors up to the root Vision
+      responses:
+        "200":
+          description: Ordered list of ancestor nodes from root to this node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeArray"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Changefeed ──────────────────────────────────────────────
+  /subscribe:
+    get:
+      operationId: subscribe
+      summary: SSE stream of node changes
+      description: >
+        Server-Sent Events stream filtered by node type(s). If no type param
+        is provided, all changes are streamed. Each event includes a changeId
+        that clients can use to resume via the /changes endpoint.
+      parameters:
+        - name: type
+          in: query
+          description: Node type(s) to subscribe to
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/NodeType"
+          style: form
+          explode: true
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /changes:
+    get:
+      operationId: listChanges
+      summary: Fetch persisted changes since a given changeId
+      description: >
+        Returns a paginated list of change entries ordered by sequence.
+        Clients that missed SSE events can catch up by polling from their
+        last known changeId.
+      parameters:
+        - name: type
+          in: query
+          required: true
+          description: Node type to fetch changes for
+          schema:
+            $ref: "#/components/schemas/NodeType"
+        - name: since
+          in: query
+          description: Return changes after this changeId (exclusive). Omit to start from the beginning.
+          schema:
+            type: integer
+            format: int64
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        "200":
+          description: List of change entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangeList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+# ═══════════════════════════════════════════════════════════════
+components:
+  parameters:
+    NodeId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    # ── Enums ───────────────────────────────────────────────
+    NodeType:
+      type: string
+      enum: [vision, goal, feature, requirement, task, gitref]
+
+    TaskStatus:
+      type: string
+      enum: [backlog, in_progress, done, blocked]
+
+    EdgeType:
+      type: string
+      enum: [BREAKS_DOWN_TO, IMPLEMENTED_BY]
+
+    GitRefKind:
+      type: string
+      enum: [commit, branch]
+
+    ChangeAction:
+      type: string
+      enum: [created, updated, deleted]
+
+    # ── Error ───────────────────────────────────────────────
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    # ── Individual node types ───────────────────────────────
+    Vision:
+      type: object
+      required: [id, type, title]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [vision]
+        title:
+          type: string
+        description:
+          type: string
+
+    Goal:
+      type: object
+      required: [id, type, title]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [goal]
+        title:
+          type: string
+        description:
+          type: string
+
+    Feature:
+      type: object
+      required: [id, type, title]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [feature]
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: integer
+          description: Lower number = higher priority
+
+    Requirement:
+      type: object
+      required: [id, type, title]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [requirement]
+        title:
+          type: string
+        description:
+          type: string
+        acceptanceCriteria:
+          type: string
+
+    Task:
+      type: object
+      required: [id, type, title, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [task]
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+
+    GitRef:
+      type: object
+      required: [id, type, repo, refType, ref]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [gitref]
+        repo:
+          type: string
+          description: Repository URL or name
+        refType:
+          $ref: "#/components/schemas/GitRefKind"
+        ref:
+          type: string
+          description: Commit SHA or branch name
+        url:
+          type: string
+          description: Link to remote (e.g. GitHub)
+        message:
+          type: string
+          description: Commit message or branch description
+
+    # ── Polymorphic Node ────────────────────────────────────
+    Node:
+      oneOf:
+        - $ref: "#/components/schemas/Vision"
+        - $ref: "#/components/schemas/Goal"
+        - $ref: "#/components/schemas/Feature"
+        - $ref: "#/components/schemas/Requirement"
+        - $ref: "#/components/schemas/Task"
+        - $ref: "#/components/schemas/GitRef"
+      discriminator:
+        propertyName: type
+        mapping:
+          vision: "#/components/schemas/Vision"
+          goal: "#/components/schemas/Goal"
+          feature: "#/components/schemas/Feature"
+          requirement: "#/components/schemas/Requirement"
+          task: "#/components/schemas/Task"
+          gitref: "#/components/schemas/GitRef"
+
+    NodeArray:
+      type: object
+      required: [nodes]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+
+    NodeList:
+      type: object
+      required: [nodes, total]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+        total:
+          type: integer
+          description: Total number of matching nodes
+
+    NodeWithRelationships:
+      type: object
+      required: [node, parents, children]
+      properties:
+        node:
+          $ref: "#/components/schemas/Node"
+        parents:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+
+    TreeNode:
+      type: object
+      required: [node, children]
+      properties:
+        node:
+          $ref: "#/components/schemas/Node"
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/TreeNode"
+
+    # ── Create / Update requests ────────────────────────────
+    CreateNodeRequest:
+      oneOf:
+        - $ref: "#/components/schemas/CreateVision"
+        - $ref: "#/components/schemas/CreateGoal"
+        - $ref: "#/components/schemas/CreateFeature"
+        - $ref: "#/components/schemas/CreateRequirement"
+        - $ref: "#/components/schemas/CreateTask"
+        - $ref: "#/components/schemas/CreateGitRef"
+      discriminator:
+        propertyName: type
+        mapping:
+          vision: "#/components/schemas/CreateVision"
+          goal: "#/components/schemas/CreateGoal"
+          feature: "#/components/schemas/CreateFeature"
+          requirement: "#/components/schemas/CreateRequirement"
+          task: "#/components/schemas/CreateTask"
+          gitref: "#/components/schemas/CreateGitRef"
+
+    CreateVision:
+      type: object
+      required: [type, title]
+      properties:
+        type:
+          type: string
+          enum: [vision]
+        title:
+          type: string
+        description:
+          type: string
+
+    CreateGoal:
+      type: object
+      required: [type, title]
+      properties:
+        type:
+          type: string
+          enum: [goal]
+        title:
+          type: string
+        description:
+          type: string
+
+    CreateFeature:
+      type: object
+      required: [type, title]
+      properties:
+        type:
+          type: string
+          enum: [feature]
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: integer
+
+    CreateRequirement:
+      type: object
+      required: [type, title]
+      properties:
+        type:
+          type: string
+          enum: [requirement]
+        title:
+          type: string
+        description:
+          type: string
+        acceptanceCriteria:
+          type: string
+
+    CreateTask:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          enum: [task]
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+
+    CreateGitRef:
+      type: object
+      required: [type, repo, refType, ref]
+      properties:
+        type:
+          type: string
+          enum: [gitref]
+        repo:
+          type: string
+        refType:
+          $ref: "#/components/schemas/GitRefKind"
+        ref:
+          type: string
+        url:
+          type: string
+        message:
+          type: string
+
+    UpdateNodeRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: integer
+          description: Only applicable for Feature nodes
+        acceptanceCriteria:
+          type: string
+          description: Only applicable for Requirement nodes
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        repo:
+          type: string
+          description: Only applicable for GitRef nodes
+        refType:
+          $ref: "#/components/schemas/GitRefKind"
+        ref:
+          type: string
+          description: Only applicable for GitRef nodes
+        url:
+          type: string
+          description: Only applicable for GitRef nodes
+        message:
+          type: string
+          description: Only applicable for GitRef nodes
+
+    # ── Edges ───────────────────────────────────────────────
+    Edge:
+      type: object
+      required: [sourceId, targetId, type]
+      properties:
+        sourceId:
+          type: string
+          format: uuid
+        targetId:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/EdgeType"
+
+    CreateEdgeRequest:
+      type: object
+      required: [sourceId, targetId, type]
+      properties:
+        sourceId:
+          type: string
+          format: uuid
+        targetId:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/EdgeType"
+
+    DeleteEdgeRequest:
+      type: object
+      required: [sourceId, targetId, type]
+      properties:
+        sourceId:
+          type: string
+          format: uuid
+        targetId:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/EdgeType"
+
+    # ── Changelog ───────────────────────────────────────────
+    ChangeEntry:
+      type: object
+      required: [changeId, action, nodeType, nodeId, timestamp]
+      properties:
+        changeId:
+          type: integer
+          format: int64
+        action:
+          $ref: "#/components/schemas/ChangeAction"
+        nodeType:
+          $ref: "#/components/schemas/NodeType"
+        nodeId:
+          type: string
+          format: uuid
+        node:
+          $ref: "#/components/schemas/Node"
+        previous:
+          $ref: "#/components/schemas/Node"
+        timestamp:
+          type: string
+          format: date-time
+
+    ChangeList:
+      type: object
+      required: [changes]
+      properties:
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChangeEntry"
+        nextSince:
+          type: integer
+          format: int64
+          description: >
+            The changeId of the last entry in the list. Use as the `since`
+            parameter in the next request for cursor-based pagination.

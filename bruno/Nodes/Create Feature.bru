@@ -1,0 +1,24 @@
+meta {
+  name: Create Feature
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/nodes
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "type": "feature",
+    "title": "SSO integration",
+    "description": "Allow users to authenticate via corporate identity providers",
+    "priority": 1
+  }
+}

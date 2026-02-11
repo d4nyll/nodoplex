@@ -1,0 +1,154 @@
+package graph
+
+import "github.com/google/uuid"
+
+// NodeType enumerates the allowed node types.
+type NodeType string
+
+const (
+	NodeTypeVision      NodeType = "vision"
+	NodeTypeGoal        NodeType = "goal"
+	NodeTypeFeature     NodeType = "feature"
+	NodeTypeRequirement NodeType = "requirement"
+	NodeTypeTask        NodeType = "task"
+	NodeTypeGitRef      NodeType = "gitref"
+)
+
+// NodeTypeToLabel maps API node types to Neo4j labels.
+var NodeTypeToLabel = map[NodeType]string{
+	NodeTypeVision:      "Vision",
+	NodeTypeGoal:        "Goal",
+	NodeTypeFeature:     "Feature",
+	NodeTypeRequirement: "Requirement",
+	NodeTypeTask:        "Task",
+	NodeTypeGitRef:      "GitRef",
+}
+
+// LabelToNodeType maps Neo4j labels to API node types.
+var LabelToNodeType = map[string]NodeType{
+	"Vision":      NodeTypeVision,
+	"Goal":        NodeTypeGoal,
+	"Feature":     NodeTypeFeature,
+	"Requirement": NodeTypeRequirement,
+	"Task":        NodeTypeTask,
+	"GitRef":      NodeTypeGitRef,
+}
+
+// EdgeType enumerates the allowed edge types.
+type EdgeType string
+
+const (
+	EdgeTypeBreaksDownTo  EdgeType = "BREAKS_DOWN_TO"
+	EdgeTypeImplementedBy EdgeType = "IMPLEMENTED_BY"
+)
+
+// AllowedEdges defines which source->target node type pairs are valid for each edge type.
+var AllowedEdges = map[EdgeType]map[NodeType]NodeType{
+	EdgeTypeBreaksDownTo: {
+		NodeTypeVision:      NodeTypeGoal,
+		NodeTypeGoal:        NodeTypeFeature,
+		NodeTypeFeature:     NodeTypeRequirement,
+		NodeTypeRequirement: NodeTypeTask,
+	},
+	EdgeTypeImplementedBy: {
+		NodeTypeTask: NodeTypeGitRef,
+	},
+}
+
+// GenericNode is a flat map representation of a node with all possible fields.
+type GenericNode struct {
+	ID                 uuid.UUID `json:"id"`
+	Type               NodeType  `json:"type"`
+	Title              *string   `json:"title,omitempty"`
+	Description        *string   `json:"description,omitempty"`
+	Priority           *int      `json:"priority,omitempty"`
+	AcceptanceCriteria *string   `json:"acceptanceCriteria,omitempty"`
+	Status             *string   `json:"status,omitempty"`
+	Repo               *string   `json:"repo,omitempty"`
+	RefType            *string   `json:"refType,omitempty"`
+	Ref                *string   `json:"ref,omitempty"`
+	URL                *string   `json:"url,omitempty"`
+	Message            *string   `json:"message,omitempty"`
+}
+
+// ToProps converts a GenericNode to a map suitable for Neo4j properties.
+func (n *GenericNode) ToProps() map[string]any {
+	props := map[string]any{
+		"id": n.ID.String(),
+	}
+	if n.Title != nil {
+		props["title"] = *n.Title
+	}
+	if n.Description != nil {
+		props["description"] = *n.Description
+	}
+	if n.Priority != nil {
+		props["priority"] = *n.Priority
+	}
+	if n.AcceptanceCriteria != nil {
+		props["acceptanceCriteria"] = *n.AcceptanceCriteria
+	}
+	if n.Status != nil {
+		props["status"] = *n.Status
+	}
+	if n.Repo != nil {
+		props["repo"] = *n.Repo
+	}
+	if n.RefType != nil {
+		props["refType"] = *n.RefType
+	}
+	if n.Ref != nil {
+		props["ref"] = *n.Ref
+	}
+	if n.URL != nil {
+		props["url"] = *n.URL
+	}
+	if n.Message != nil {
+		props["message"] = *n.Message
+	}
+	return props
+}
+
+// NodeFromProps reconstructs a GenericNode from Neo4j properties and label.
+func NodeFromProps(props map[string]any, label string) GenericNode {
+	n := GenericNode{}
+
+	if id, ok := props["id"].(string); ok {
+		n.ID = uuid.MustParse(id)
+	}
+	if nt, ok := LabelToNodeType[label]; ok {
+		n.Type = nt
+	}
+	if v, ok := props["title"].(string); ok {
+		n.Title = &v
+	}
+	if v, ok := props["description"].(string); ok {
+		n.Description = &v
+	}
+	if v, ok := props["priority"].(int64); ok {
+		i := int(v)
+		n.Priority = &i
+	}
+	if v, ok := props["acceptanceCriteria"].(string); ok {
+		n.AcceptanceCriteria = &v
+	}
+	if v, ok := props["status"].(string); ok {
+		n.Status = &v
+	}
+	if v, ok := props["repo"].(string); ok {
+		n.Repo = &v
+	}
+	if v, ok := props["refType"].(string); ok {
+		n.RefType = &v
+	}
+	if v, ok := props["ref"].(string); ok {
+		n.Ref = &v
+	}
+	if v, ok := props["url"].(string); ok {
+		n.URL = &v
+	}
+	if v, ok := props["message"].(string); ok {
+		n.Message = &v
+	}
+	return n
+}

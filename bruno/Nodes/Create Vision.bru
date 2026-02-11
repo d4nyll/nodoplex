@@ -1,0 +1,23 @@
+meta {
+  name: Create Vision
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/nodes
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "type": "vision",
+    "title": "Become the #1 PM tool",
+    "description": "Our north star"
+  }
+}

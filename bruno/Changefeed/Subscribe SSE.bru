@@ -1,0 +1,15 @@
+meta {
+  name: Subscribe SSE
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/subscribe
+  body: none
+  auth: none
+}
+
+params:query {
+  ~type: feature
+}

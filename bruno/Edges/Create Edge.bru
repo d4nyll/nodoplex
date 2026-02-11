@@ -1,0 +1,28 @@
+meta {
+  name: Create Edge
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/edges
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "sourceId": "{{sourceNodeId}}",
+    "targetId": "{{targetNodeId}}",
+    "type": "BREAKS_DOWN_TO"
+  }
+}
+
+vars:pre-request {
+  sourceNodeId: d53279b0-befe-4df5-9a49-a870f7f40391
+  targetNodeId: b64b9033-953d-4f5f-a48a-133aa10ea0a4
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Delete Edge
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/edges
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "sourceId": "{{sourceNodeId}}",
+    "targetId": "{{targetNodeId}}",
+    "type": "BREAKS_DOWN_TO"
+  }
+}
