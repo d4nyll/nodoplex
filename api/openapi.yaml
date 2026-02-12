@@ -372,6 +372,10 @@ components:
           type: string
         description:
           type: string
+        targetDate:
+          type: string
+          format: date
+          description: Target completion date for the goal (YYYY-MM-DD)
 
     Feature:
       type: object
@@ -558,6 +562,10 @@ components:
           type: string
         description:
           type: string
+        targetDate:
+          type: string
+          format: date
+          description: Target completion date for the goal (YYYY-MM-DD)
 
     CreateFeature:
       type: object
@@ -634,6 +642,10 @@ components:
           description: Only applicable for Requirement nodes
         status:
           $ref: "#/components/schemas/TaskStatus"
+        targetDate:
+          type: string
+          format: date
+          description: Only applicable for Goal nodes (YYYY-MM-DD)
         repo:
           type: string
           description: Only applicable for GitRef nodes

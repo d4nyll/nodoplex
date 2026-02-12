@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/d4nyll/nodoplex/internal/graph"
 	openapi_types "github.com/oapi-codegen/runtime/types"
@@ -36,6 +37,9 @@ func parseCreateNodeRequest(req CreateNodeRequest) (string, map[string]any, erro
 		props["title"] = v.Title
 		if v.Description != nil {
 			props["description"] = *v.Description
+		}
+		if v.TargetDate != nil {
+			props["targetDate"] = v.TargetDate.Time.Format("2006-01-02")
 		}
 
 	case "feature":
@@ -115,6 +119,9 @@ func updateRequestToProps(req UpdateNodeRequest) map[string]any {
 	if req.Status != nil {
 		props["status"] = string(*req.Status)
 	}
+	if req.TargetDate != nil {
+		props["targetDate"] = req.TargetDate.Time.Format("2006-01-02")
+	}
 	if req.Repo != nil {
 		props["repo"] = *req.Repo
 	}
@@ -155,6 +162,13 @@ func genericNodeToAPI(n graph.GenericNode) (Node, error) {
 			Type:        GoalTypeGoal,
 			Title:       derefStr(n.Title),
 			Description: n.Description,
+		}
+		if n.TargetDate != nil {
+			t, err := time.Parse("2006-01-02", *n.TargetDate)
+			if err == nil {
+				d := openapi_types.Date{Time: t}
+				v.TargetDate = &d
+			}
 		}
 		if err := node.FromGoal(v); err != nil {
 			return node, err

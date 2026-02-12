@@ -1,6 +1,8 @@
 package graph
 
-import "github.com/google/uuid"
+import (
+	"github.com/google/uuid"
+)
 
 // NodeType enumerates the allowed node types.
 type NodeType string
@@ -64,6 +66,7 @@ type GenericNode struct {
 	Priority           *int      `json:"priority,omitempty"`
 	AcceptanceCriteria *string   `json:"acceptanceCriteria,omitempty"`
 	Status             *string   `json:"status,omitempty"`
+	TargetDate         *string   `json:"targetDate,omitempty"` // Goal: YYYY-MM-DD
 	Repo               *string   `json:"repo,omitempty"`
 	RefType            *string   `json:"refType,omitempty"`
 	Ref                *string   `json:"ref,omitempty"`
@@ -90,6 +93,9 @@ func (n *GenericNode) ToProps() map[string]any {
 	}
 	if n.Status != nil {
 		props["status"] = *n.Status
+	}
+	if n.TargetDate != nil {
+		props["targetDate"] = *n.TargetDate
 	}
 	if n.Repo != nil {
 		props["repo"] = *n.Repo
@@ -134,6 +140,9 @@ func NodeFromProps(props map[string]any, label string) GenericNode {
 	}
 	if v, ok := props["status"].(string); ok {
 		n.Status = &v
+	}
+	if v, ok := props["targetDate"].(string); ok {
+		n.TargetDate = &v
 	}
 	if v, ok := props["repo"].(string); ok {
 		n.Repo = &v

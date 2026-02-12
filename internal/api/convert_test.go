@@ -383,6 +383,63 @@ func TestSubtreeToAPI(t *testing.T) {
 	}
 }
 
+func TestUpdateRequestToProps_TargetDate(t *testing.T) {
+	// Simulate the JSON that the frontend sends: {"targetDate":"2026-03-15"}
+	body := `{"targetDate":"2026-03-15"}`
+
+	var req UpdateNodeRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal UpdateNodeRequest: %v", err)
+	}
+
+	if req.TargetDate == nil {
+		t.Fatal("TargetDate is nil after unmarshalling — this is the bug!")
+	}
+
+	props := updateRequestToProps(req)
+	if len(props) != 1 {
+		t.Fatalf("expected 1 prop, got %d: %v", len(props), props)
+	}
+	if props["targetDate"] != "2026-03-15" {
+		t.Errorf("targetDate = %v, want %q", props["targetDate"], "2026-03-15")
+	}
+}
+
+func TestGenericNodeToAPI_GoalWithTargetDate(t *testing.T) {
+	td := "2026-03-15"
+	node := graph.GenericNode{
+		ID:         uuid.New(),
+		Type:       graph.NodeTypeGoal,
+		Title:      strPtr("Goal with date"),
+		TargetDate: &td,
+	}
+
+	apiNode, err := genericNodeToAPI(node)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	goal, err := apiNode.AsGoal()
+	if err != nil {
+		t.Fatalf("AsGoal error: %v", err)
+	}
+	if goal.TargetDate == nil {
+		t.Fatal("TargetDate is nil in API response — conversion bug!")
+	}
+
+	// Verify the JSON output includes targetDate
+	data, err := json.Marshal(apiNode)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	var raw map[string]any
+	json.Unmarshal(data, &raw)
+	if raw["targetDate"] != "2026-03-15" {
+		t.Errorf("JSON targetDate = %v, want %q", raw["targetDate"], "2026-03-15")
+	}
+}
+
 func TestGenericNodeToAPI_JSONRoundTrip(t *testing.T) {
 	// Test that the API node serializes and deserializes correctly
 	node := graph.GenericNode{
