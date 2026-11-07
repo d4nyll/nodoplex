@@ -16,7 +16,7 @@ services:
         condition: service_started
 
   neo4j:
-    image: neo4j:2025-community
+    image: neo4j:2026-community
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -27,7 +27,7 @@ services:
       - neo4j_data:/data
 
   postgres:
-    image: postgres:17
+    image: postgres:18
     ports:
       - "5432:5432"
     environment:
@@ -35,7 +35,7 @@ services:
       POSTGRES_PASSWORD: changeme
       POSTGRES_DB: nodoplex
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql
 
 volumes:
   neo4j_data:
