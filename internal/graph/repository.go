@@ -15,7 +15,12 @@ import (
 // nodes on both their id and that namespace, so a node in another namespace
 // is indistinguishable from a node that doesn't exist. Queries match on the
 // :Node label so Neo4j can use the (:Node) indexes created by
-// db.RunNeo4jMigrations.
+// db.RunNeo4jMigrations. Every lookup carries a USING INDEX SEEK hint on
+// (:Node).id or (:Node).namespace. Without it, a plan made while the
+// database was nearly empty scans a whole index and filters its entries, and
+// Neo4j keeps that plan in its query cache after the database grows. A plain
+// USING INDEX hint doesn't prevent this, because a scan of the hinted index
+// satisfies it.
 type Repository struct {
 	driver neo4j.DriverWithContext
 }
@@ -48,7 +53,7 @@ func (r *Repository) GetNode(ctx context.Context, ns string, id uuid.UUID) (Gene
 	defer session.Close(ctx)
 
 	result, err := session.Run(ctx,
-		"MATCH (n:Node {id: $id, namespace: $ns}) RETURN n, labels(n) AS labels",
+		"MATCH (n:Node {id: $id, namespace: $ns}) USING INDEX SEEK n:Node(id) RETURN n, labels(n) AS labels",
 		map[string]any{"id": id.String(), "ns": ns},
 	)
 	if err != nil {
@@ -69,13 +74,13 @@ func (r *Repository) ListNodes(ctx context.Context, ns string, nodeType *string,
 	// node with the type label across all namespaces.
 	// ponytail: the type filter runs over all of the namespace's nodes; add a
 	// per-type namespace index if one namespace grows large.
-	matchClause := "MATCH (n:Node) USING INDEX n:Node(namespace)"
+	matchClause := "MATCH (n:Node) USING INDEX SEEK n:Node(namespace)"
 	if nodeType != nil {
 		label, ok := NodeTypeToLabel[NodeType(*nodeType)]
 		if !ok {
 			return nil, 0, fmt.Errorf("unknown node type: %s", *nodeType)
 		}
-		matchClause = fmt.Sprintf("MATCH (n:Node:%s) USING INDEX n:Node(namespace)", label)
+		matchClause = fmt.Sprintf("MATCH (n:Node:%s) USING INDEX SEEK n:Node(namespace)", label)
 	}
 
 	// Build WHERE conditions
@@ -151,7 +156,7 @@ func (r *Repository) UpdateNode(ctx context.Context, ns string, id uuid.UUID, pr
 	delete(props, "namespace")
 
 	result, err := session.Run(ctx,
-		"MATCH (n:Node {id: $id, namespace: $ns}) SET n += $props RETURN n, labels(n) AS labels",
+		"MATCH (n:Node {id: $id, namespace: $ns}) USING INDEX SEEK n:Node(id) SET n += $props RETURN n, labels(n) AS labels",
 		map[string]any{"id": id.String(), "ns": ns, "props": props},
 	)
 	if err != nil {
@@ -179,7 +184,7 @@ func (r *Repository) DeleteNode(ctx context.Context, ns string, id uuid.UUID) (G
 	}
 
 	_, err = session.Run(ctx,
-		"MATCH (n:Node {id: $id, namespace: $ns}) DETACH DELETE n",
+		"MATCH (n:Node {id: $id, namespace: $ns}) USING INDEX SEEK n:Node(id) DETACH DELETE n",
 		map[string]any{"id": id.String(), "ns": ns},
 	)
 	if err != nil {
@@ -195,7 +200,7 @@ func (r *Repository) CreateEdge(ctx context.Context, ns string, sourceID, target
 	defer session.Close(ctx)
 
 	query := fmt.Sprintf(
-		"MATCH (a:Node {id: $sourceId, namespace: $ns}), (b:Node {id: $targetId, namespace: $ns}) CREATE (a)-[:%s]->(b)",
+		"MATCH (a:Node {id: $sourceId, namespace: $ns}), (b:Node {id: $targetId, namespace: $ns}) USING INDEX SEEK a:Node(id) USING INDEX SEEK b:Node(id) CREATE (a)-[:%s]->(b)",
 		edgeType,
 	)
 	result, err := session.Run(ctx, query, map[string]any{
@@ -222,7 +227,7 @@ func (r *Repository) DeleteEdge(ctx context.Context, ns string, sourceID, target
 	defer session.Close(ctx)
 
 	query := fmt.Sprintf(
-		"MATCH (a:Node {id: $sourceId, namespace: $ns})-[r:%s]->(b:Node {id: $targetId, namespace: $ns}) DELETE r",
+		"MATCH (a:Node {id: $sourceId, namespace: $ns})-[r:%s]->(b:Node {id: $targetId, namespace: $ns}) USING INDEX SEEK a:Node(id) DELETE r",
 		edgeType,
 	)
 	result, err := session.Run(ctx, query, map[string]any{
@@ -275,6 +280,7 @@ func (r *Repository) CreateDependency(ctx context.Context, ns string, sourceID, 
 
 		result, err := tx.Run(ctx,
 			`MATCH (a:Node {id: $sourceId, namespace: $ns}), (b:Node {id: $targetId, namespace: $ns})
+			 USING INDEX SEEK a:Node(id) USING INDEX SEEK b:Node(id)
 			 OPTIONAL MATCH p = shortestPath((b)-[:DEPENDS_ON*]->(a))
 			 RETURN EXISTS { (a)-[:DEPENDS_ON]->(b) } AS exists, p IS NOT NULL AS cycle`,
 			params,
@@ -296,6 +302,7 @@ func (r *Repository) CreateDependency(ctx context.Context, ns string, sourceID, 
 
 		result, err = tx.Run(ctx,
 			`MATCH (a:Node {id: $sourceId, namespace: $ns}), (b:Node {id: $targetId, namespace: $ns})
+			 USING INDEX SEEK a:Node(id) USING INDEX SEEK b:Node(id)
 			 CREATE (a)-[:DEPENDS_ON]->(b)`,
 			params,
 		)
@@ -325,7 +332,7 @@ func (r *Repository) GetDependencies(ctx context.Context, ns string, id uuid.UUI
 	defer session.Close(ctx)
 
 	result, err := session.Run(ctx,
-		"MATCH (n:Node {id: $id, namespace: $ns})-[:DEPENDS_ON]->(d:Node {namespace: $ns}) RETURN d AS n, labels(d) AS labels",
+		"MATCH (n:Node {id: $id, namespace: $ns})-[:DEPENDS_ON]->(d:Node {namespace: $ns}) USING INDEX SEEK n:Node(id) RETURN d AS n, labels(d) AS labels",
 		map[string]any{"id": id.String(), "ns": ns},
 	)
 	if err != nil {
@@ -341,7 +348,7 @@ func (r *Repository) GetDependents(ctx context.Context, ns string, id uuid.UUID)
 	defer session.Close(ctx)
 
 	result, err := session.Run(ctx,
-		"MATCH (d:Node {namespace: $ns})-[:DEPENDS_ON]->(n:Node {id: $id, namespace: $ns}) RETURN d AS n, labels(d) AS labels",
+		"MATCH (d:Node {namespace: $ns})-[:DEPENDS_ON]->(n:Node {id: $id, namespace: $ns}) USING INDEX SEEK n:Node(id) RETURN d AS n, labels(d) AS labels",
 		map[string]any{"id": id.String(), "ns": ns},
 	)
 	if err != nil {
@@ -356,7 +363,7 @@ func (r *Repository) GetChildren(ctx context.Context, ns string, id uuid.UUID) (
 	defer session.Close(ctx)
 
 	result, err := session.Run(ctx,
-		"MATCH (n:Node {id: $id, namespace: $ns})-[:BREAKS_DOWN_TO|IMPLEMENTED_BY]->(child:Node {namespace: $ns}) RETURN child AS n, labels(child) AS labels",
+		"MATCH (n:Node {id: $id, namespace: $ns})-[:BREAKS_DOWN_TO|IMPLEMENTED_BY]->(child:Node {namespace: $ns}) USING INDEX SEEK n:Node(id) RETURN child AS n, labels(child) AS labels",
 		map[string]any{"id": id.String(), "ns": ns},
 	)
 	if err != nil {
@@ -371,7 +378,7 @@ func (r *Repository) GetParents(ctx context.Context, ns string, id uuid.UUID) ([
 	defer session.Close(ctx)
 
 	result, err := session.Run(ctx,
-		"MATCH (parent:Node {namespace: $ns})-[:BREAKS_DOWN_TO|IMPLEMENTED_BY]->(n:Node {id: $id, namespace: $ns}) RETURN parent AS n, labels(parent) AS labels",
+		"MATCH (parent:Node {namespace: $ns})-[:BREAKS_DOWN_TO|IMPLEMENTED_BY]->(n:Node {id: $id, namespace: $ns}) USING INDEX SEEK n:Node(id) RETURN parent AS n, labels(parent) AS labels",
 		map[string]any{"id": id.String(), "ns": ns},
 	)
 	if err != nil {
@@ -400,6 +407,7 @@ func (r *Repository) GetSubtree(ctx context.Context, ns string, id uuid.UUID) (*
 	// Get all descendants with their paths
 	result, err := session.Run(ctx,
 		`MATCH path = (n:Node {id: $id, namespace: $ns})-[:BREAKS_DOWN_TO|IMPLEMENTED_BY*]->(desc:Node)
+		 USING INDEX SEEK n:Node(id)
 		 WHERE all(x IN nodes(path) WHERE x.namespace = $ns)
 		 WITH desc, labels(desc) AS labels, length(path) AS depth,
 		      [rel IN relationships(path) | startNode(rel).id] AS parentIds
@@ -459,6 +467,7 @@ func (r *Repository) GetLineage(ctx context.Context, ns string, id uuid.UUID) ([
 
 	result, err := session.Run(ctx,
 		`MATCH path = (root:Node)-[:BREAKS_DOWN_TO|IMPLEMENTED_BY*]->(n:Node {id: $id, namespace: $ns})
+		 USING INDEX SEEK n:Node(id)
 		 WHERE all(x IN nodes(path) WHERE x.namespace = $ns)
 		   AND NOT EXISTS { MATCH (p:Node)-[:BREAKS_DOWN_TO|IMPLEMENTED_BY]->(root) WHERE p.namespace = $ns }
 		 UNWIND nodes(path) AS node
@@ -477,7 +486,7 @@ func (r *Repository) GetNodeType(ctx context.Context, ns string, id uuid.UUID) (
 	defer session.Close(ctx)
 
 	result, err := session.Run(ctx,
-		"MATCH (n:Node {id: $id, namespace: $ns}) RETURN labels(n) AS labels",
+		"MATCH (n:Node {id: $id, namespace: $ns}) USING INDEX SEEK n:Node(id) RETURN labels(n) AS labels",
 		map[string]any{"id": id.String(), "ns": ns},
 	)
 	if err != nil {
