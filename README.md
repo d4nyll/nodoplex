@@ -1,11 +1,11 @@
 # Nodoplex
 
-Graph-based project management platform. All project entities -- visions, goals, features, requirements, tasks, and git refs -- are stored as nodes in a Neo4j graph, giving every stakeholder a single shared view of how work connects to company goals.
+Graph-based project management platform. All project entities -- visions, goals, features, requirements, tasks, and outputs -- are stored as nodes in a Neo4j graph, giving every stakeholder a single shared view of how work connects to company goals.
 
 ## Architecture
 
 ```
-Vision → Goal → Feature → Requirement → Task → GitRef
+Vision → Goal → Feature → Requirement → Task → Output
          (BREAKS_DOWN_TO)              (IMPLEMENTED_BY)
 ```
 
@@ -93,16 +93,16 @@ curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
   -d '{"type":"task","title":"Implement OIDC flow","status":"backlog"}' | jq
 ```
 
-### Attach a git ref to a task
+### Attach an output to a task
 
 ```bash
 curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
   -H 'Content-Type: application/json' \
-  -d '{"type":"gitref","repo":"d4nyll/nodoplex","refType":"branch","ref":"feat/oidc","url":"https://github.com/d4nyll/nodoplex/tree/feat/oidc"}' | jq
+  -d '{"type":"output","outputType":"git","description":"Branch with the OIDC flow","payload":{"repository":"https://github.com/d4nyll/nodoplex.git","baseRef":"main","currentRef":"feat/oidc"}}' | jq
 
 curl -s -X POST http://localhost:8080/namespaces/acme/edges \
   -H 'Content-Type: application/json' \
-  -d '{"sourceId":"<task-id>","targetId":"<gitref-id>","type":"IMPLEMENTED_BY"}' | jq
+  -d '{"sourceId":"<task-id>","targetId":"<output-id>","type":"IMPLEMENTED_BY"}' | jq
 ```
 
 ### Record that one requirement depends on another
@@ -194,6 +194,28 @@ Concurrent requests can't form a cycle between them: the server checks for a cyc
 `GET /namespaces/{namespace}/nodes/{id}/dependencies` lists the nodes a node depends on, and `GET /namespaces/{namespace}/nodes/{id}/dependents` lists the nodes that depend on it. `DELETE /namespaces/{namespace}/edges` removes a `DEPENDS_ON` edge like any other, and deleting a node removes its `DEPENDS_ON` edges. Children, parents, subtree, and lineage follow `BREAKS_DOWN_TO` and `IMPLEMENTED_BY` only, so `DEPENDS_ON` edges never appear in them.
 
 The changelog, `/changes` and `/subscribe` record node changes only. Creating or deleting an edge of any type writes no changelog entry and sends no event.
+
+### Outputs
+
+An Output node records something a task produced, such as a Git branch, a document or a deployment. An `IMPLEMENTED_BY` edge from the task attaches it, and a task is the only node type that can be its parent. An Output has these fields:
+
+- `outputType`: a non-empty string that names the kind of output, for example `git`. Nodoplex doesn't interpret it. The node type stays in `type`, which is `output`.
+- `description`: text that says what the output is.
+- `payload`: any JSON object. Nodoplex stores it and returns it unchanged, without interpreting or validating it. `PATCH` replaces the whole payload.
+
+An output with `outputType` `git` uses this payload shape (`GitOutputPayload` in the OpenAPI spec):
+
+```json
+{
+  "repository": "https://github.com/d4nyll/nodoplex.git",
+  "baseRef": "main",
+  "currentRef": "feat/oidc"
+}
+```
+
+- `repository`: the Git remote URL.
+- `baseRef`: the Git ref the work started from.
+- `currentRef`: the Git ref that holds the work, for example a branch name or a commit SHA.
 
 ### Assigning a namespace to existing nodes
 

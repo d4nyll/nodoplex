@@ -23,21 +23,21 @@ func TestDerefStr(t *testing.T) {
 
 func TestUpdateRequestToProps_AllFields(t *testing.T) {
 	status := TaskStatus("in_progress")
-	refType := GitRefKind("commit")
+	payload := OutputPayload{"currentRef": "feat/x"}
 	req := UpdateNodeRequest{
 		Title:              strPtr("New Title"),
 		Description:        strPtr("New Description"),
 		Priority:           intPtr(2),
 		AcceptanceCriteria: strPtr("AC"),
 		Status:             &status,
-		Repo:               strPtr("my-repo"),
-		RefType:            &refType,
-		Ref:                strPtr("abc123"),
-		Url:                strPtr("https://example.com"),
-		Message:            strPtr("commit msg"),
+		OutputType:         strPtr("git"),
+		Payload:            &payload,
 	}
 
-	props := updateRequestToProps(req)
+	props, err := updateRequestToProps(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	expected := map[string]any{
 		"title":              "New Title",
@@ -45,11 +45,8 @@ func TestUpdateRequestToProps_AllFields(t *testing.T) {
 		"priority":           2,
 		"acceptanceCriteria": "AC",
 		"status":             "in_progress",
-		"repo":               "my-repo",
-		"refType":            "commit",
-		"ref":                "abc123",
-		"url":                "https://example.com",
-		"message":            "commit msg",
+		"outputType":         "git",
+		"payload":            `{"currentRef":"feat/x"}`,
 	}
 
 	if len(props) != len(expected) {
@@ -78,7 +75,7 @@ func TestUpdateRequestToProps_AllFields(t *testing.T) {
 
 func TestUpdateRequestToProps_Empty(t *testing.T) {
 	req := UpdateNodeRequest{}
-	props := updateRequestToProps(req)
+	props, _ := updateRequestToProps(req)
 	if len(props) != 0 {
 		t.Errorf("expected empty props, got %d: %v", len(props), props)
 	}
@@ -88,7 +85,7 @@ func TestUpdateRequestToProps_PartialFields(t *testing.T) {
 	req := UpdateNodeRequest{
 		Title: strPtr("Only Title"),
 	}
-	props := updateRequestToProps(req)
+	props, _ := updateRequestToProps(req)
 	if len(props) != 1 {
 		t.Errorf("expected 1 prop, got %d: %v", len(props), props)
 	}
@@ -243,62 +240,74 @@ func TestGenericNodeToAPI_TaskDefaultStatus(t *testing.T) {
 	}
 }
 
-func TestGenericNodeToAPI_GitRef(t *testing.T) {
-	node := graph.GenericNode{
-		ID:      uuid.New(),
-		Type:    graph.NodeTypeGitRef,
-		Repo:    strPtr("my-repo"),
-		RefType: strPtr("branch"),
-		Ref:     strPtr("main"),
-		URL:     strPtr("https://github.com"),
-		Message: strPtr("Initial"),
-	}
-
-	apiNode, err := genericNodeToAPI(node)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	gitRef, err := apiNode.AsGitRef()
-	if err != nil {
-		t.Fatalf("AsGitRef error: %v", err)
-	}
-	if gitRef.Repo != "my-repo" {
-		t.Errorf("Repo = %q, want %q", gitRef.Repo, "my-repo")
-	}
-	if gitRef.RefType != Branch {
-		t.Errorf("RefType = %q, want %q", gitRef.RefType, Branch)
-	}
-	if gitRef.Ref != "main" {
-		t.Errorf("Ref = %q, want %q", gitRef.Ref, "main")
-	}
-	if gitRef.Url == nil || *gitRef.Url != "https://github.com" {
-		t.Errorf("URL = %v, want %q", gitRef.Url, "https://github.com")
-	}
-	if gitRef.Message == nil || *gitRef.Message != "Initial" {
-		t.Errorf("Message = %v, want %q", gitRef.Message, "Initial")
+func TestUpdateRequestToProps_EmptyOutputType(t *testing.T) {
+	if _, err := updateRequestToProps(UpdateNodeRequest{OutputType: strPtr("")}); err == nil {
+		t.Error("expected an error for an empty outputType")
 	}
 }
 
-func TestGenericNodeToAPI_GitRefDefaultRefType(t *testing.T) {
+func TestParseCreateNodeRequest_Output(t *testing.T) {
+	var req CreateNodeRequest
+	body := `{"type":"output","outputType":"git","description":"OIDC branch","payload":{"repository":"https://github.com/d4nyll/nodoplex.git","baseRef":"main","currentRef":"feat/oidc"}}`
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	nodeType, props, err := parseCreateNodeRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if nodeType != "output" {
+		t.Errorf("nodeType = %q, want output", nodeType)
+	}
+	want := map[string]any{
+		"outputType":  "git",
+		"description": "OIDC branch",
+		"payload":     `{"baseRef":"main","currentRef":"feat/oidc","repository":"https://github.com/d4nyll/nodoplex.git"}`,
+	}
+	if len(props) != len(want) {
+		t.Fatalf("props = %v, want %v", props, want)
+	}
+	for k, v := range want {
+		if props[k] != v {
+			t.Errorf("props[%q] = %v, want %v", k, props[k], v)
+		}
+	}
+}
+
+func TestParseCreateNodeRequest_OutputInvalid(t *testing.T) {
+	for _, body := range []string{
+		`{"type":"output"}`,
+		`{"type":"output","outputType":""}`,
+		`{"type":"output","outputType":"git","payload":["not","an","object"]}`,
+		`{"type":"output","outputType":"git","payload":"text"}`,
+	} {
+		var req CreateNodeRequest
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Fatalf("unmarshal %s: %v", body, err)
+		}
+		if _, _, err := parseCreateNodeRequest(req); err == nil {
+			t.Errorf("%s: expected an error", body)
+		}
+	}
+}
+
+func TestGenericNodeToAPI_Output(t *testing.T) {
 	node := graph.GenericNode{
-		ID:   uuid.New(),
-		Type: graph.NodeTypeGitRef,
-		Repo: strPtr("repo"),
-		Ref:  strPtr("abc"),
+		ID:          uuid.New(),
+		Type:        graph.NodeTypeOutput,
+		OutputType:  strPtr("git"),
+		Description: strPtr("OIDC branch"),
+		Payload:     map[string]any{"currentRef": "feat/oidc", "nested": map[string]any{"n": 1.0}},
 	}
 
 	apiNode, err := genericNodeToAPI(node)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	gitRef, err := apiNode.AsGitRef()
-	if err != nil {
-		t.Fatalf("AsGitRef error: %v", err)
-	}
-	if gitRef.RefType != Commit {
-		t.Errorf("default RefType = %q, want %q", gitRef.RefType, Commit)
+	b, _ := json.Marshal(apiNode)
+	want := `{"description":"OIDC branch","id":"` + node.ID.String() + `","outputType":"git","payload":{"currentRef":"feat/oidc","nested":{"n":1}},"type":"output"}`
+	if string(b) != want {
+		t.Errorf("JSON = %s, want %s", b, want)
 	}
 }
 
@@ -396,7 +405,7 @@ func TestUpdateRequestToProps_TargetDate(t *testing.T) {
 		t.Fatal("TargetDate is nil after unmarshalling — this is the bug!")
 	}
 
-	props := updateRequestToProps(req)
+	props, _ := updateRequestToProps(req)
 	if len(props) != 1 {
 		t.Fatalf("expected 1 prop, got %d: %v", len(props), props)
 	}

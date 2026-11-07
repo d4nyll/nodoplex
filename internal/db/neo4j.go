@@ -20,7 +20,7 @@ func NewNeo4jDriver(ctx context.Context, uri, user, password string) (neo4j.Driv
 }
 
 // nodeLabels lists all node labels that need uniqueness constraints.
-var nodeLabels = []string{"Vision", "Goal", "Feature", "Requirement", "Task", "GitRef"}
+var nodeLabels = []string{"Vision", "Goal", "Feature", "Requirement", "Task", "Output"}
 
 // RunMigrations creates uniqueness constraints for all node types, the
 // constraint and index on the :Node label that namespace-scoped lookups use,
@@ -61,7 +61,7 @@ func RunNeo4jMigrations(ctx context.Context, driver neo4j.DriverWithContext) err
 
 // legacyNodesMatch matches work nodes created before namespaces existed: they
 // carry a type label but no namespace property.
-const legacyNodesMatch = `MATCH (n) WHERE n.namespace IS NULL AND (n:Vision OR n:Goal OR n:Feature OR n:Requirement OR n:Task OR n:GitRef)`
+const legacyNodesMatch = `MATCH (n) WHERE n.namespace IS NULL AND (n:Vision OR n:Goal OR n:Feature OR n:Requirement OR n:Task OR n:Output)`
 
 // CountNodesWithoutNamespace returns the number of work nodes that have no
 // namespace. The API never returns these nodes; AssignNamespace moves them

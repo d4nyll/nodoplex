@@ -90,7 +90,7 @@ func TestSubscribeNoFilter_ReceivesAll(t *testing.T) {
 	ch, unsub := bus.Subscribe("ns", nil)
 	defer unsub()
 
-	types := []string{"vision", "goal", "task", "gitref"}
+	types := []string{"vision", "goal", "task", "output"}
 	for _, nt := range types {
 		bus.Publish(makeEvent(ActionCreated, nt))
 	}

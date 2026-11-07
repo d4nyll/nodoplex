@@ -187,7 +187,11 @@ func (h *Handlers) UpdateNode(w http.ResponseWriter, r *http.Request, namespace 
 		return
 	}
 
-	props := updateRequestToProps(req)
+	props, err := updateRequestToProps(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if len(props) == 0 {
 		writeError(w, http.StatusBadRequest, "no fields to update")
 		return
@@ -575,20 +579,11 @@ func nodeToJSONMap(n graph.GenericNode) map[string]any {
 	if n.Status != nil {
 		m["status"] = *n.Status
 	}
-	if n.Repo != nil {
-		m["repo"] = *n.Repo
+	if n.OutputType != nil {
+		m["outputType"] = *n.OutputType
 	}
-	if n.RefType != nil {
-		m["refType"] = *n.RefType
-	}
-	if n.Ref != nil {
-		m["ref"] = *n.Ref
-	}
-	if n.URL != nil {
-		m["url"] = *n.URL
-	}
-	if n.Message != nil {
-		m["message"] = *n.Message
+	if n.Payload != nil {
+		m["payload"] = n.Payload
 	}
 	return m
 }
