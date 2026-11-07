@@ -1190,3 +1190,21 @@ func TestE2E_GetDependenciesAndDependents_NotFound(t *testing.T) {
 		}
 	}
 }
+
+// ── ListChanges E2E Tests ────────────────────────────────────────────────────
+
+func TestE2E_ListChanges_InvalidType(t *testing.T) {
+	ts := setupTestServer(&mockGraphRepo{})
+	defer ts.Close()
+
+	for _, query := range []string{"type=", "type=bogus"} {
+		resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/changes?" + query)
+		if err != nil {
+			t.Fatalf("request error: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want %d", query, resp.StatusCode, http.StatusBadRequest)
+		}
+	}
+}

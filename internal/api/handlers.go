@@ -384,6 +384,10 @@ func (h *Handlers) GetLineage(w http.ResponseWriter, r *http.Request, namespace 
 // ── Changefeed ───────────────────────────────────────────────────────────────
 
 func (h *Handlers) ListChanges(w http.ResponseWriter, r *http.Request, namespace Namespace, params ListChangesParams) {
+	if !params.Type.Valid() {
+		writeError(w, http.StatusBadRequest, "invalid type")
+		return
+	}
 	sinceID := int64(0)
 	if params.Since != nil {
 		sinceID = *params.Since
