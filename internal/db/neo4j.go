@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 )
 
 // NewNeo4jDriver creates a new Neo4j driver and verifies connectivity.

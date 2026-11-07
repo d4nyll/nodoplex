@@ -9,7 +9,7 @@ require (
 	github.com/getkin/kin-openapi v0.152.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
-	github.com/neo4j/neo4j-go-driver/v5 v5.28.6
+	github.com/neo4j/neo4j-go-driver/v6 v6.4.0
 	github.com/oapi-codegen/runtime v1.8.0
 )
 
