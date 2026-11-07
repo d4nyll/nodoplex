@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -101,7 +103,10 @@ func (h *Handlers) CreateNode(w http.ResponseWriter, r *http.Request, namespace 
 	}
 
 	// Persist change and publish event
-	h.publishChange(r, namespace, events.ActionCreated, node, nil)
+	if err := h.publishChange(r, namespace, events.ActionCreated, node, nil); err != nil {
+		writeChangeNotRecorded(w, err)
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, apiNode)
 }
@@ -206,7 +211,10 @@ func (h *Handlers) UpdateNode(w http.ResponseWriter, r *http.Request, namespace 
 	apiNode, _ := genericNodeToAPI(after)
 
 	// Persist change and publish event
-	h.publishChange(r, namespace, events.ActionUpdated, after, &before)
+	if err := h.publishChange(r, namespace, events.ActionUpdated, after, &before); err != nil {
+		writeChangeNotRecorded(w, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, apiNode)
 }
@@ -223,7 +231,10 @@ func (h *Handlers) DeleteNode(w http.ResponseWriter, r *http.Request, namespace 
 	}
 
 	// Persist change and publish event
-	h.publishChange(r, namespace, events.ActionDeleted, graph.GenericNode{ID: deleted.ID, Type: deleted.Type}, &deleted)
+	if err := h.publishChange(r, namespace, events.ActionDeleted, graph.GenericNode{ID: deleted.ID, Type: deleted.Type}, &deleted); err != nil {
+		writeChangeNotRecorded(w, err)
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -508,8 +519,10 @@ func (h *Handlers) Subscribe(w http.ResponseWriter, r *http.Request, namespace N
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// publishChange persists a change to PostgreSQL and publishes it to the event bus.
-func (h *Handlers) publishChange(r *http.Request, namespace string, action events.ChangeAction, node graph.GenericNode, previous *graph.GenericNode) {
+// publishChange persists a change to PostgreSQL and publishes it to the event
+// bus. If the changelog insert fails, it logs the change it couldn't record,
+// publishes nothing and returns the error.
+func (h *Handlers) publishChange(r *http.Request, namespace string, action events.ChangeAction, node graph.GenericNode, previous *graph.GenericNode) error {
 	nodeJSON, _ := json.Marshal(nodeToJSONMap(node))
 	var prevJSON json.RawMessage
 	if previous != nil {
@@ -536,10 +549,12 @@ func (h *Handlers) publishChange(r *http.Request, namespace string, action event
 	var changeID int64
 	if h.clStore != nil {
 		var err error
-		changeID, err = h.clStore.Append(r.Context(), entry)
+		// The node change is already saved, so a client that disconnects now
+		// must not cancel the insert that records it.
+		changeID, err = h.clStore.Append(context.WithoutCancel(r.Context()), entry)
 		if err != nil {
-			// Log but don't fail the request
-			return
+			log.Printf("changelog: %s of %s %s in namespace %q not recorded: %v", action, node.Type, node.ID, namespace, err)
+			return err
 		}
 	}
 
@@ -553,6 +568,13 @@ func (h *Handlers) publishChange(r *http.Request, namespace string, action event
 		Previous:  prevJSON,
 		Timestamp: now,
 	})
+	return nil
+}
+
+// writeChangeNotRecorded responds 500 to a write whose node change succeeded
+// in Neo4j but whose changelog insert failed.
+func writeChangeNotRecorded(w http.ResponseWriter, err error) {
+	writeError(w, http.StatusInternalServerError, "the node change was saved but not recorded in the changelog: "+err.Error())
 }
 
 func nodeToJSONMap(n graph.GenericNode) map[string]any {

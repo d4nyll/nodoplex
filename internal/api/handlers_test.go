@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +17,7 @@ import (
 	"github.com/d4nyll/nodoplex/internal/events"
 	"github.com/d4nyll/nodoplex/internal/graph"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const testNS = "ns-test"
@@ -131,17 +135,11 @@ func (m *mockGraphRepo) GetNodeType(ctx context.Context, ns string, id uuid.UUID
 	return "", nil
 }
 
-// mockChangelogStore implements a minimal mock for changelog.Store.
-// We cannot mock the Store directly since it holds a *pgxpool.Pool,
-// so we skip changelog operations in handler tests by accepting the nil store.
-// Instead, we use a real (nil-pool) store and accept that changelog writes fail silently.
-
 // setupTestServer creates an httptest.Server with mocked dependencies.
 func setupTestServer(repo *mockGraphRepo) *httptest.Server {
 	graphSvc := graph.NewService(repo)
 	bus := events.NewEventBus()
-	// Use nil changelog store - publishChange will fail silently on DB write.
-	// This is acceptable for handler tests since we test that the HTTP response is correct.
+	// With a nil changelog store, publishChange skips the changelog insert.
 	handlers := NewHandlers(graphSvc, nil, bus)
 	mux := http.NewServeMux()
 	handler := NewRouter(handlers, mux)
@@ -1240,5 +1238,64 @@ func TestPublishChange_SnapshotCarriesAPIFields(t *testing.T) {
 				t.Errorf("%s: snapshot %s = %v, want %v (API: %s, snapshot: %s)", label, k, got[k], v, apiJSON, ev.Node)
 			}
 		}
+	}
+}
+
+// TestE2E_ChangelogFailure checks that a node write whose changelog insert
+// fails is answered with 500, logged, and not published.
+func TestE2E_ChangelogFailure(t *testing.T) {
+	pool, err := pgxpool.New(context.Background(), "postgres://127.0.0.1:1/none")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Close() // every query on a closed pool fails
+
+	id := uuid.New()
+	node := graph.GenericNode{ID: id, Type: graph.NodeTypeVision, Title: strPtr("v")}
+	repo := &mockGraphRepo{
+		createNodeFn: func(ctx context.Context, label string, props map[string]any) (graph.GenericNode, error) {
+			return node, nil
+		},
+		updateNodeFn: func(ctx context.Context, id uuid.UUID, props map[string]any) (graph.GenericNode, graph.GenericNode, error) {
+			return node, node, nil
+		},
+		deleteNodeFn: func(ctx context.Context, id uuid.UUID) (graph.GenericNode, error) {
+			return node, nil
+		},
+	}
+	bus := events.NewEventBus()
+	ch, unsub := bus.Subscribe(testNS, nil)
+	defer unsub()
+	ts := httptest.NewServer(NewRouter(NewHandlers(graph.NewService(repo), changelog.NewStore(pool), bus), http.NewServeMux()))
+	defer ts.Close()
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
+	url := ts.URL + "/namespaces/" + testNS + "/nodes"
+	for _, c := range []struct{ method, path, body string }{
+		{http.MethodPost, "", `{"type":"vision","title":"v"}`},
+		{http.MethodPatch, "/" + id.String(), `{"title":"v"}`},
+		{http.MethodDelete, "/" + id.String(), ""},
+	} {
+		req, _ := http.NewRequest(c.method, url+c.path, strings.NewReader(c.body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", c.method, err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(string(b), "not recorded in the changelog") {
+			t.Errorf("%s: status = %d, body = %s; want 500 saying the change was not recorded", c.method, resp.StatusCode, b)
+		}
+	}
+	if n := strings.Count(logs.String(), id.String()+` in namespace "`+testNS+`" not recorded`); n != 3 {
+		t.Errorf("logged %d unrecorded changes, want 3; log:\n%s", n, logs.String())
+	}
+	select {
+	case ev := <-ch:
+		t.Errorf("published %+v, want nothing", ev)
+	default:
 	}
 }
