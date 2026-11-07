@@ -9,7 +9,7 @@ Vision → Goal → Feature → Requirement → Task → GitRef
          (BREAKS_DOWN_TO)              (IMPLEMENTED_BY)
 ```
 
-- **Backend**: Go standard library `net/http` (Go 1.22+)
+- **Backend**: Go standard library `net/http` (Go 1.27+)
 - **Graph DB**: Neo4j (stores all project entities and relationships)
 - **Change log**: PostgreSQL (persists an append-only changelog for the changefeed)
 - **API spec**: OpenAPI 3.0.3 (`api/openapi.yaml`), code generated via `oapi-codegen`
@@ -18,7 +18,7 @@ Vision → Goal → Feature → Requirement → Task → GitRef
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.27+
 - Docker and Docker Compose
 
 ### 1. Start databases
@@ -28,6 +28,8 @@ make docker-up
 ```
 
 This starts Neo4j (bolt://localhost:7687, browser at http://localhost:7474) and PostgreSQL (localhost:5432).
+
+The compose file uses Postgres 18, which can't open a `pg_data` volume created by Postgres 17 or earlier: the container exits and its log mentions `pg_upgrade`. To reset local data, run `docker compose down -v` (this also deletes the Neo4j data), or remove only the Postgres volume: find it with `docker volume ls` (it ends in `_pg_data`) and run `docker volume rm <name>`. To keep an existing changelog, export it with `pg_dump -Fc` from Postgres 17 and import it with `pg_restore` after the upgrade.
 
 ### 2. Build and run
 
