@@ -46,7 +46,13 @@ func RunNeo4jMigrations(ctx context.Context, driver neo4j.DriverWithContext) err
 		"CREATE CONSTRAINT dependency_lock_namespace_unique IF NOT EXISTS FOR (l:DependencyLock) REQUIRE l.namespace IS UNIQUE",
 	)
 	for _, q := range queries {
-		if _, err := session.Run(ctx, q, nil); err != nil {
+		// ExecuteWrite retries transient errors such as the deadlock two
+		// processes hit when they create the same constraints at once.
+		_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+			_, err := tx.Run(ctx, q, nil)
+			return nil, err
+		})
+		if err != nil {
 			return fmt.Errorf("neo4j: %s: %w", q, err)
 		}
 	}
