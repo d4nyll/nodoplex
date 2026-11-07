@@ -1207,3 +1207,38 @@ func TestE2E_ListChanges_InvalidType(t *testing.T) {
 		}
 	}
 }
+
+// TestPublishChange_SnapshotCarriesAPIFields checks that the node snapshot in
+// a change event holds every field the API returns for each node type.
+func TestPublishChange_SnapshotCarriesAPIFields(t *testing.T) {
+	props := map[string]any{
+		"title": "t", "description": "d", "priority": int64(2), "acceptanceCriteria": "ac",
+		"status": "in_progress", "targetDate": "2026-12-31",
+		"repo": "r", "refType": "branch", "ref": "main", "url": "https://example.com", "message": "m",
+	}
+	for _, label := range []string{"Vision", "Goal", "Feature", "Requirement", "Task", "GitRef"} {
+		props["id"] = uuid.NewString()
+		n := graph.NodeFromProps(props, label)
+
+		bus := events.NewEventBus()
+		ch, unsub := bus.Subscribe(testNS, nil)
+		h := NewHandlers(nil, nil, bus)
+		h.publishChange(httptest.NewRequest(http.MethodPost, "/", nil), testNS, events.ActionCreated, n, nil)
+		ev := <-ch
+		unsub()
+
+		apiNode, err := genericNodeToAPI(n)
+		if err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+		apiJSON, _ := json.Marshal(apiNode)
+		var want, got map[string]any
+		json.Unmarshal(apiJSON, &want)
+		json.Unmarshal(ev.Node, &got)
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("%s: snapshot %s = %v, want %v (API: %s, snapshot: %s)", label, k, got[k], v, apiJSON, ev.Node)
+			}
+		}
+	}
+}

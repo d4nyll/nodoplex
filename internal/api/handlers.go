@@ -569,6 +569,9 @@ func nodeToJSONMap(n graph.GenericNode) map[string]any {
 	if n.Priority != nil {
 		m["priority"] = *n.Priority
 	}
+	if n.TargetDate != nil {
+		m["targetDate"] = *n.TargetDate
+	}
 	if n.AcceptanceCriteria != nil {
 		m["acceptanceCriteria"] = *n.AcceptanceCriteria
 	}
