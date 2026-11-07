@@ -47,15 +47,17 @@ func (s *Store) Append(ctx context.Context, entry Entry) (int64, error) {
 }
 
 // ListSince returns changelog entries in namespace ns with change_id > sinceID
-// for the given node type, ordered by change_id ASC, limited to limit rows.
-func (s *Store) ListSince(ctx context.Context, ns string, nodeType string, sinceID int64, limit int) ([]Entry, error) {
+// whose node type is one of nodeTypes (any type if nodeTypes is empty),
+// ordered by change_id ASC, limited to limit rows.
+func (s *Store) ListSince(ctx context.Context, ns string, nodeTypes []string, sinceID int64, limit int) ([]Entry, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT change_id, namespace, action, node_type, node_id, node, previous, timestamp
 		 FROM changelog
-		 WHERE namespace = $1 AND node_type = $2 AND change_id > $3
+		 WHERE namespace = $1 AND (coalesce(cardinality($2::text[]), 0) = 0 OR node_type = ANY($2))
+		   AND change_id > $3
 		 ORDER BY change_id ASC
 		 LIMIT $4`,
-		ns, nodeType, sinceID, limit,
+		ns, nodeTypes, sinceID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("changelog list: %w", err)

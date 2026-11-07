@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -313,6 +314,123 @@ wait:
 		if len(list.Changes) != 1 || list.Changes[0].NodeId.String() != want {
 			t.Errorf("changes in %s = %s, want one change for %s", ns, b, want)
 		}
+	}
+}
+
+// TestIntegration_SubscribeLastEventID checks that a subscriber that
+// reconnects with Last-Event-ID first gets the changes after that id in its
+// namespace (and of its types), then live changes, each once.
+func TestIntegration_SubscribeLastEventID(t *testing.T) {
+	e := newIntegrationEnv(t)
+	nsA, nsB := newNamespace(), newNamespace()
+
+	seen := e.createNode(t, nsA, map[string]any{"type": "vision", "title": "seen"})
+	_, b := e.call(t, http.MethodGet, "/namespaces/"+nsA+"/changes?type=vision", nil)
+	var list ChangeList
+	json.Unmarshal(b, &list)
+	if len(list.Changes) != 1 || list.Changes[0].NodeId.String() != seen {
+		t.Fatalf("changes in %s = %s, want one change for %s", nsA, b, seen)
+	}
+	lastID := list.Changes[0].ChangeId
+
+	missedGoal := e.createNode(t, nsA, map[string]any{"type": "goal", "title": "missed goal"})
+	missedVision := e.createNode(t, nsA, map[string]any{"type": "vision", "title": "missed vision"})
+	otherNS := e.createNode(t, nsB, map[string]any{"type": "vision", "title": "other namespace"})
+
+	// subscribe reconnects with Last-Event-ID, runs live, and returns the SSE
+	// ids and node ids of the events it receives until the event for the node
+	// id that live returns.
+	type event struct {
+		id   int64
+		node string
+	}
+	subscribe := func(query string, live func() string) []event {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, e.ts.URL+"/namespaces/"+nsA+"/subscribe"+query, nil)
+		req.Header.Set("Last-Event-ID", itoa64(lastID))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("subscribe: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("subscribe status = %d", resp.StatusCode)
+		}
+		lines := make(chan string, 100)
+		go func() {
+			defer close(lines)
+			sc := bufio.NewScanner(resp.Body)
+			for sc.Scan() {
+				lines <- sc.Text()
+			}
+		}()
+		untilID := live()
+		var got []event
+		var id int64
+		timeout := time.After(5 * time.Second)
+		for {
+			select {
+			case l, ok := <-lines:
+				if !ok {
+					t.Fatalf("stream closed after %v", got)
+				}
+				if v, ok := strings.CutPrefix(l, "id: "); ok {
+					id, _ = strconv.ParseInt(v, 10, 64)
+				}
+				if v, ok := strings.CutPrefix(l, "data: "); ok {
+					var ev events.ChangeEvent
+					if err := json.Unmarshal([]byte(v), &ev); err != nil {
+						t.Fatalf("decode %s: %v", v, err)
+					}
+					got = append(got, event{id, ev.NodeID.String()})
+					if ev.NodeID.String() == untilID {
+						return got
+					}
+				}
+			case <-timeout:
+				t.Fatalf("no event for %s; got %v", untilID, got)
+			}
+		}
+	}
+
+	var liveVision string
+	got := subscribe("", func() string {
+		liveVision = e.createNode(t, nsA, map[string]any{"type": "vision", "title": "live"})
+		return liveVision
+	})
+	want := []string{missedGoal, missedVision, liveVision}
+	if len(got) != len(want) {
+		t.Fatalf("events = %v, want nodes %v (not %s or %s)", got, want, seen, otherNS)
+	}
+	for i, ev := range got {
+		if ev.node != want[i] {
+			t.Errorf("event %d is for node %s, want %s", i, ev.node, want[i])
+		}
+		if ev.id <= lastID {
+			t.Errorf("event %d has id %d, want one after %d", i, ev.id, lastID)
+		}
+	}
+
+	var liveGoal string
+	got = subscribe("?type=goal", func() string {
+		liveGoal = e.createNode(t, nsA, map[string]any{"type": "goal", "title": "live goal"})
+		return liveGoal
+	})
+	if len(got) != 2 || got[0].node != missedGoal || got[1].node != liveGoal {
+		t.Errorf("goal events = %v, want nodes %s then %s", got, missedGoal, liveGoal)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, e.ts.URL+"/namespaces/"+nsA+"/subscribe", nil)
+	req.Header.Set("Last-Event-ID", "abc")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("Last-Event-ID abc: status = %d, want 400", resp.StatusCode)
 	}
 }
 

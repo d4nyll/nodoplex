@@ -19,6 +19,10 @@ import (
 
 const keepaliveInterval = 30 * time.Second
 
+// replayPageSize is the number of changelog entries Subscribe reads per query
+// when it replays the changes a reconnecting client missed.
+const replayPageSize = 1000
+
 // Handlers implements the generated ServerInterface.
 type Handlers struct {
 	graphSvc *graph.Service
@@ -408,7 +412,7 @@ func (h *Handlers) ListChanges(w http.ResponseWriter, r *http.Request, namespace
 		limit = *params.Limit
 	}
 
-	entries, err := h.clStore.ListSince(r.Context(), namespace, string(params.Type), sinceID, limit)
+	entries, err := h.clStore.ListSince(r.Context(), namespace, []string{string(params.Type)}, sinceID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -456,24 +460,76 @@ func (h *Handlers) Subscribe(w http.ResponseWriter, r *http.Request, namespace N
 		}
 	}
 
-	ch, unsub := h.bus.Subscribe(namespace, nodeTypes)
-	defer unsub()
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
 
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
-	flusher.Flush()
 
 	ctx := r.Context()
+
+	send := func(id int64, action string, v any) {
+		data, err := json.Marshal(v)
+		if err != nil {
+			return
+		}
+		_, _ = w.Write([]byte("id: " + itoa64(id) + "\n"))
+		_, _ = w.Write([]byte("event: node." + action + "\n"))
+		_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
+		flusher.Flush()
+	}
+
+	// replay sends the changelog entries after sinceID, adds their ids to sent
+	// and returns the last id it sent (sinceID if it sent none).
+	sent := map[int64]bool{}
+	replay := func(sinceID int64) (int64, error) {
+		for {
+			entries, err := h.clStore.ListSince(ctx, namespace, nodeTypes, sinceID, replayPageSize)
+			if err != nil {
+				log.Printf("subscribe: replay in namespace %q after change %d: %v", namespace, sinceID, err)
+				return sinceID, err
+			}
+			for _, e := range entries {
+				send(e.ChangeID, e.Action, e)
+				sent[e.ChangeID] = true
+				sinceID = e.ChangeID
+			}
+			if len(entries) < replayPageSize {
+				return sinceID, nil
+			}
+		}
+	}
+
+	// A client that reconnects with Last-Event-ID first gets the changes it
+	// missed. The first replay runs before subscribing, so a long replay
+	// can't overflow the subscription's buffer. The second replay sends the
+	// changes recorded before the subscription started, and the live loop
+	// skips every change a replay sent.
+	resume := params.LastEventID != nil && h.clStore != nil
+	var sinceID int64
+	if resume {
+		var err error
+		if sinceID, err = replay(*params.LastEventID); err != nil {
+			return
+		}
+	}
+	ch, unsub := h.bus.Subscribe(namespace, nodeTypes)
+	defer unsub()
+	if resume {
+		if _, err := replay(sinceID); err != nil {
+			return
+		}
+	}
+	// Send the headers (with status 200) if no replay has, only now that the
+	// subscription exists, so a client that has the response gets every
+	// change made after it.
+	flusher.Flush()
 
 	// Send keepalive ticker
 	keepalive := make(chan struct{})
@@ -501,15 +557,9 @@ func (h *Handlers) Subscribe(w http.ResponseWriter, r *http.Request, namespace N
 			if !ok {
 				return
 			}
-			data, err := json.Marshal(event)
-			if err != nil {
-				continue
+			if !sent[event.ChangeID] {
+				send(event.ChangeID, string(event.Action), event)
 			}
-			eventType := "node." + string(event.Action)
-			_, _ = w.Write([]byte("id: " + itoa64(event.ChangeID) + "\n"))
-			_, _ = w.Write([]byte("event: " + eventType + "\n"))
-			_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
-			flusher.Flush()
 		case <-keepalive:
 			_, _ = w.Write([]byte(": keepalive\n\n"))
 			flusher.Flush()

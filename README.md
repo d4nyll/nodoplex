@@ -149,7 +149,12 @@ curl -N http://localhost:8080/namespaces/acme/subscribe
 
 # Only feature and task changes
 curl -N 'http://localhost:8080/namespaces/acme/subscribe?type=feature&type=task'
+
+# Changes after changeId 42 from the changelog, then live changes
+curl -N -H 'Last-Event-ID: 42' http://localhost:8080/namespaces/acme/subscribe
 ```
+
+The SSE id of each event is its changeId. A browser `EventSource` sends the last id it received in the `Last-Event-ID` header when it reconnects, so it receives the changes it missed before live changes resume.
 
 ### Poll changes since a changeId
 

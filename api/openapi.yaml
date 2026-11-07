@@ -326,8 +326,20 @@ paths:
         Server-Sent Events stream of node changes in the namespace, filtered
         by node type(s). If no type param is provided, all changes in the
         namespace are streamed. Each event includes a changeId
-        that clients can use to resume via the /changes endpoint.
+        that clients can use to resume via the /changes endpoint. The SSE
+        id of each event is its changeId, so a client that reconnects with a
+        Last-Event-ID header first receives the changes it missed from the
+        changelog, then live changes.
       parameters:
+        - name: Last-Event-ID
+          in: header
+          description: >
+            Replay the changes in the namespace (and of the requested types)
+            with a changeId greater than this one before streaming live
+            changes.
+          schema:
+            type: integer
+            format: int64
         - name: type
           in: query
           description: Node type(s) to subscribe to
