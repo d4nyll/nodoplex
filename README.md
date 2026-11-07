@@ -47,10 +47,12 @@ curl http://localhost:8080/health
 
 ## API examples
 
+Every example works in the namespace `acme`. See [Namespaces](#namespaces).
+
 ### Create a vision
 
 ```bash
-curl -s -X POST http://localhost:8080/nodes \
+curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
   -H 'Content-Type: application/json' \
   -d '{"type":"vision","title":"Become the #1 PM tool","description":"Our north star"}' | jq
 ```
@@ -58,7 +60,7 @@ curl -s -X POST http://localhost:8080/nodes \
 ### Create a goal under the vision
 
 ```bash
-curl -s -X POST http://localhost:8080/nodes \
+curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
   -H 'Content-Type: application/json' \
   -d '{"type":"goal","title":"Launch MVP by Q3"}' | jq
 ```
@@ -66,7 +68,7 @@ curl -s -X POST http://localhost:8080/nodes \
 ### Link them
 
 ```bash
-curl -s -X POST http://localhost:8080/edges \
+curl -s -X POST http://localhost:8080/namespaces/acme/edges \
   -H 'Content-Type: application/json' \
   -d '{"sourceId":"<vision-id>","targetId":"<goal-id>","type":"BREAKS_DOWN_TO"}' | jq
 ```
@@ -74,7 +76,7 @@ curl -s -X POST http://localhost:8080/edges \
 ### Create a feature with priority
 
 ```bash
-curl -s -X POST http://localhost:8080/nodes \
+curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
   -H 'Content-Type: application/json' \
   -d '{"type":"feature","title":"SSO integration","priority":1}' | jq
 ```
@@ -82,7 +84,7 @@ curl -s -X POST http://localhost:8080/nodes \
 ### Create a task
 
 ```bash
-curl -s -X POST http://localhost:8080/nodes \
+curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
   -H 'Content-Type: application/json' \
   -d '{"type":"task","title":"Implement OIDC flow","status":"backlog"}' | jq
 ```
@@ -90,11 +92,11 @@ curl -s -X POST http://localhost:8080/nodes \
 ### Attach a git ref to a task
 
 ```bash
-curl -s -X POST http://localhost:8080/nodes \
+curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
   -H 'Content-Type: application/json' \
   -d '{"type":"gitref","repo":"d4nyll/nodoplex","refType":"branch","ref":"feat/oidc","url":"https://github.com/d4nyll/nodoplex/tree/feat/oidc"}' | jq
 
-curl -s -X POST http://localhost:8080/edges \
+curl -s -X POST http://localhost:8080/namespaces/acme/edges \
   -H 'Content-Type: application/json' \
   -d '{"sourceId":"<task-id>","targetId":"<gitref-id>","type":"IMPLEMENTED_BY"}' | jq
 ```
@@ -102,46 +104,79 @@ curl -s -X POST http://localhost:8080/edges \
 ### List features
 
 ```bash
-curl -s 'http://localhost:8080/nodes?type=feature' | jq
+curl -s 'http://localhost:8080/namespaces/acme/nodes?type=feature' | jq
 ```
 
 ### Get a node with its relationships
 
 ```bash
-curl -s http://localhost:8080/nodes/<id> | jq
+curl -s http://localhost:8080/namespaces/acme/nodes/<id> | jq
 ```
 
 ### Get the full subtree from a vision
 
 ```bash
-curl -s http://localhost:8080/nodes/<vision-id>/subtree | jq
+curl -s http://localhost:8080/namespaces/acme/nodes/<vision-id>/subtree | jq
 ```
 
 ### Trace lineage from a task up to the root vision
 
 ```bash
-curl -s http://localhost:8080/nodes/<task-id>/lineage | jq
+curl -s http://localhost:8080/namespaces/acme/nodes/<task-id>/lineage | jq
 ```
 
 ### Subscribe to changes (SSE)
 
 ```bash
-# All changes
-curl -N http://localhost:8080/subscribe
+# All changes in the namespace
+curl -N http://localhost:8080/namespaces/acme/subscribe
 
 # Only feature and task changes
-curl -N 'http://localhost:8080/subscribe?type=feature&type=task'
+curl -N 'http://localhost:8080/namespaces/acme/subscribe?type=feature&type=task'
 ```
 
 ### Poll changes since a changeId
 
 ```bash
-curl -s 'http://localhost:8080/changes?type=feature&since=0&limit=50' | jq
+curl -s 'http://localhost:8080/namespaces/acme/changes?type=feature&since=0&limit=50' | jq
 ```
 
 ## API documentation
 
 The full OpenAPI spec is at [`api/openapi.yaml`](api/openapi.yaml). You can view it in any OpenAPI viewer (e.g. Swagger UI, Redocly).
+
+### Namespaces
+
+Every node belongs to exactly one namespace. A namespace is an opaque string that the caller picks, and Nodoplex attaches no meaning to it. It can be any 1 to 256 UTF-8 characters, except that it can't contain control characters and can't be `.` or `..`. A node gets the namespace of the request that creates it, and the namespace never changes.
+
+A request carries its namespace as the first path segment: every API path starts with `/namespaces/{namespace}/`, for example `GET /namespaces/acme/nodes/{id}`. Only `/health` sits outside a namespace. Nodoplex uses a path prefix rather than a header for three reasons:
+
+- The OpenAPI spec declares the namespace as a required path parameter on every operation, so the generated server passes it to every handler as an argument. A handler that ignores it doesn't compile.
+- Browsers can't set custom headers on an `EventSource`, so a header couldn't carry the namespace for `/subscribe`.
+- The namespace shows up in every URL, so access logs and proxies see which namespace a request touched.
+
+Every operation sees only its own namespace:
+
+- Reads, lists, traversals, edge creation and deletion return 404 for a node in another namespace, with the same body as for a node that doesn't exist.
+- An edge can only connect two nodes in the request's namespace, so no edge crosses namespaces.
+- `/changes` and `/subscribe` only return changes made in the request's namespace. Change ids come from one sequence shared by all namespaces, so the ids a namespace sees have gaps where other namespaces made changes.
+- A request to an unprefixed path such as `/nodes`, or with an empty namespace such as `/namespaces//nodes`, gets a 400. So does a namespace that is too long, isn't valid UTF-8, contains a control character, or is `.` or `..`.
+
+Nodes carry a `:Node` label and a `namespace` property in Neo4j. Lookups by id seek the unique constraint on `(:Node).id` and lists seek the index on `(:Node).namespace`; `NODOPLEX_INTEGRATION=1 go test ./internal/graph -run Integration` checks the query plans.
+
+### Assigning a namespace to existing nodes
+
+Nodes created before namespaces existed have no namespace. The server never returns them, and logs a warning with their count at startup. To move all of them, and their changelog entries, into one namespace, run the server once with `-assign-namespace` against the same databases:
+
+```bash
+go run ./cmd/server -assign-namespace=acme
+# assign-namespace: moved 4 nodes and 5 changelog entries into namespace "acme"
+
+# or, with Docker Compose
+docker compose run --rm api -assign-namespace=acme
+```
+
+The command exits after the migration. It only touches nodes and changelog entries that have no namespace, so running it again changes nothing.
 
 ## Development
 
@@ -154,6 +189,9 @@ make build
 
 # Run tests
 make test
+
+# Run the integration tests too, against the databases from `make docker-up`
+NODOPLEX_INTEGRATION=1 go test ./...
 
 # Stop databases
 make docker-down

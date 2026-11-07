@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/d4nyll/nodoplex/internal/changelog"
@@ -32,9 +33,49 @@ func NewHandlers(graphSvc *graph.Service, clStore *changelog.Store, bus *events.
 	}
 }
 
+// NewRouter registers the generated API routes on mux and returns the handler
+// to serve. Every API route lives under /namespaces/{namespace}; the
+// namespace is validated before any handler runs. Requests to the unprefixed
+// paths, or whose namespace segment is empty, "." or "..", are rejected with
+// 400 rather than falling through to 404 or a redirect.
+func NewRouter(h *Handlers, mux *http.ServeMux) http.Handler {
+	HandlerWithOptions(h, StdHTTPServerOptions{
+		BaseRouter:  mux,
+		Middlewares: []MiddlewareFunc{validateNamespace},
+	})
+	for _, p := range []string{"/nodes", "/nodes/", "/edges", "/changes", "/subscribe"} {
+		mux.HandleFunc(p, missingNamespace)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// ServeMux would redirect /namespaces//nodes, /namespaces/./nodes and
+		// /namespaces/../nodes to a cleaned path.
+		if rest, ok := strings.CutPrefix(r.URL.Path, "/namespaces/"); ok {
+			if seg, _, _ := strings.Cut(rest, "/"); seg == "" || seg == "." || seg == ".." {
+				writeError(w, http.StatusBadRequest, graph.ValidateNamespace(seg).Error())
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func validateNamespace(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := graph.ValidateNamespace(r.PathValue("namespace")); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func missingNamespace(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusBadRequest, "namespace required: API paths start with /namespaces/{namespace}/")
+}
+
 // ── Node CRUD ────────────────────────────────────────────────────────────────
 
-func (h *Handlers) CreateNode(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) CreateNode(w http.ResponseWriter, r *http.Request, namespace Namespace) {
 	var req CreateNodeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -47,7 +88,7 @@ func (h *Handlers) CreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := h.graphSvc.CreateNode(r.Context(), graph.NodeType(nodeType), props)
+	node, err := h.graphSvc.CreateNode(r.Context(), namespace, graph.NodeType(nodeType), props)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -60,12 +101,12 @@ func (h *Handlers) CreateNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Persist change and publish event
-	h.publishChange(r, events.ActionCreated, node, nil)
+	h.publishChange(r, namespace, events.ActionCreated, node, nil)
 
 	writeJSON(w, http.StatusCreated, apiNode)
 }
 
-func (h *Handlers) ListNodes(w http.ResponseWriter, r *http.Request, params ListNodesParams) {
+func (h *Handlers) ListNodes(w http.ResponseWriter, r *http.Request, namespace Namespace, params ListNodesParams) {
 	var nodeTypeStr *string
 	if params.Type != nil {
 		s := string(*params.Type)
@@ -86,7 +127,7 @@ func (h *Handlers) ListNodes(w http.ResponseWriter, r *http.Request, params List
 		limit = *params.Limit
 	}
 
-	nodes, total, err := h.graphSvc.ListNodes(r.Context(), nodeTypeStr, statusStr, params.Search, offset, limit)
+	nodes, total, err := h.graphSvc.ListNodes(r.Context(), namespace, nodeTypeStr, statusStr, params.Search, offset, limit)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -105,8 +146,8 @@ func (h *Handlers) ListNodes(w http.ResponseWriter, r *http.Request, params List
 	writeJSON(w, http.StatusOK, NodeList{Nodes: apiNodes, Total: total})
 }
 
-func (h *Handlers) GetNode(w http.ResponseWriter, r *http.Request, id NodeId) {
-	node, err := h.graphSvc.GetNode(r.Context(), uuid.UUID(id))
+func (h *Handlers) GetNode(w http.ResponseWriter, r *http.Request, namespace Namespace, id NodeId) {
+	node, err := h.graphSvc.GetNode(r.Context(), namespace, uuid.UUID(id))
 	if err != nil {
 		if errors.Is(err, graph.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
@@ -116,13 +157,13 @@ func (h *Handlers) GetNode(w http.ResponseWriter, r *http.Request, id NodeId) {
 		return
 	}
 
-	children, err := h.graphSvc.GetChildren(r.Context(), uuid.UUID(id))
+	children, err := h.graphSvc.GetChildren(r.Context(), namespace, uuid.UUID(id))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	parents, err := h.graphSvc.GetParents(r.Context(), uuid.UUID(id))
+	parents, err := h.graphSvc.GetParents(r.Context(), namespace, uuid.UUID(id))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -139,7 +180,7 @@ func (h *Handlers) GetNode(w http.ResponseWriter, r *http.Request, id NodeId) {
 	})
 }
 
-func (h *Handlers) UpdateNode(w http.ResponseWriter, r *http.Request, id NodeId) {
+func (h *Handlers) UpdateNode(w http.ResponseWriter, r *http.Request, namespace Namespace, id NodeId) {
 	var req UpdateNodeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -152,7 +193,7 @@ func (h *Handlers) UpdateNode(w http.ResponseWriter, r *http.Request, id NodeId)
 		return
 	}
 
-	before, after, err := h.graphSvc.UpdateNode(r.Context(), uuid.UUID(id), props)
+	before, after, err := h.graphSvc.UpdateNode(r.Context(), namespace, uuid.UUID(id), props)
 	if err != nil {
 		if errors.Is(err, graph.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
@@ -165,13 +206,13 @@ func (h *Handlers) UpdateNode(w http.ResponseWriter, r *http.Request, id NodeId)
 	apiNode, _ := genericNodeToAPI(after)
 
 	// Persist change and publish event
-	h.publishChange(r, events.ActionUpdated, after, &before)
+	h.publishChange(r, namespace, events.ActionUpdated, after, &before)
 
 	writeJSON(w, http.StatusOK, apiNode)
 }
 
-func (h *Handlers) DeleteNode(w http.ResponseWriter, r *http.Request, id NodeId) {
-	deleted, err := h.graphSvc.DeleteNode(r.Context(), uuid.UUID(id))
+func (h *Handlers) DeleteNode(w http.ResponseWriter, r *http.Request, namespace Namespace, id NodeId) {
+	deleted, err := h.graphSvc.DeleteNode(r.Context(), namespace, uuid.UUID(id))
 	if err != nil {
 		if errors.Is(err, graph.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
@@ -182,14 +223,14 @@ func (h *Handlers) DeleteNode(w http.ResponseWriter, r *http.Request, id NodeId)
 	}
 
 	// Persist change and publish event
-	h.publishChange(r, events.ActionDeleted, graph.GenericNode{ID: deleted.ID, Type: deleted.Type}, &deleted)
+	h.publishChange(r, namespace, events.ActionDeleted, graph.GenericNode{ID: deleted.ID, Type: deleted.Type}, &deleted)
 
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // ── Edges ────────────────────────────────────────────────────────────────────
 
-func (h *Handlers) CreateEdge(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) CreateEdge(w http.ResponseWriter, r *http.Request, namespace Namespace) {
 	var req CreateEdgeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -198,6 +239,7 @@ func (h *Handlers) CreateEdge(w http.ResponseWriter, r *http.Request) {
 
 	err := h.graphSvc.CreateEdge(
 		r.Context(),
+		namespace,
 		uuid.UUID(req.SourceId),
 		uuid.UUID(req.TargetId),
 		graph.EdgeType(req.Type),
@@ -218,7 +260,7 @@ func (h *Handlers) CreateEdge(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handlers) DeleteEdge(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) DeleteEdge(w http.ResponseWriter, r *http.Request, namespace Namespace) {
 	var req DeleteEdgeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -227,13 +269,18 @@ func (h *Handlers) DeleteEdge(w http.ResponseWriter, r *http.Request) {
 
 	err := h.graphSvc.DeleteEdge(
 		r.Context(),
+		namespace,
 		uuid.UUID(req.SourceId),
 		uuid.UUID(req.TargetId),
-		string(req.Type),
+		graph.EdgeType(req.Type),
 	)
 	if err != nil {
 		if errors.Is(err, graph.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "edge not found")
+			return
+		}
+		if errors.Is(err, graph.ErrUnknownEdgeType) {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -245,8 +292,8 @@ func (h *Handlers) DeleteEdge(w http.ResponseWriter, r *http.Request) {
 
 // ── Graph Traversal ──────────────────────────────────────────────────────────
 
-func (h *Handlers) GetChildren(w http.ResponseWriter, r *http.Request, id NodeId) {
-	children, err := h.graphSvc.GetChildren(r.Context(), uuid.UUID(id))
+func (h *Handlers) GetChildren(w http.ResponseWriter, r *http.Request, namespace Namespace, id NodeId) {
+	children, err := h.graphSvc.GetChildren(r.Context(), namespace, uuid.UUID(id))
 	if err != nil {
 		if errors.Is(err, graph.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
@@ -259,8 +306,8 @@ func (h *Handlers) GetChildren(w http.ResponseWriter, r *http.Request, id NodeId
 	writeJSON(w, http.StatusOK, NodeArray{Nodes: genericNodesToAPI(children)})
 }
 
-func (h *Handlers) GetParents(w http.ResponseWriter, r *http.Request, id NodeId) {
-	parents, err := h.graphSvc.GetParents(r.Context(), uuid.UUID(id))
+func (h *Handlers) GetParents(w http.ResponseWriter, r *http.Request, namespace Namespace, id NodeId) {
+	parents, err := h.graphSvc.GetParents(r.Context(), namespace, uuid.UUID(id))
 	if err != nil {
 		if errors.Is(err, graph.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
@@ -273,8 +320,8 @@ func (h *Handlers) GetParents(w http.ResponseWriter, r *http.Request, id NodeId)
 	writeJSON(w, http.StatusOK, NodeArray{Nodes: genericNodesToAPI(parents)})
 }
 
-func (h *Handlers) GetSubtree(w http.ResponseWriter, r *http.Request, id NodeId) {
-	tree, err := h.graphSvc.GetSubtree(r.Context(), uuid.UUID(id))
+func (h *Handlers) GetSubtree(w http.ResponseWriter, r *http.Request, namespace Namespace, id NodeId) {
+	tree, err := h.graphSvc.GetSubtree(r.Context(), namespace, uuid.UUID(id))
 	if err != nil {
 		if errors.Is(err, graph.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
@@ -288,8 +335,8 @@ func (h *Handlers) GetSubtree(w http.ResponseWriter, r *http.Request, id NodeId)
 	writeJSON(w, http.StatusOK, apiTree)
 }
 
-func (h *Handlers) GetLineage(w http.ResponseWriter, r *http.Request, id NodeId) {
-	lineage, err := h.graphSvc.GetLineage(r.Context(), uuid.UUID(id))
+func (h *Handlers) GetLineage(w http.ResponseWriter, r *http.Request, namespace Namespace, id NodeId) {
+	lineage, err := h.graphSvc.GetLineage(r.Context(), namespace, uuid.UUID(id))
 	if err != nil {
 		if errors.Is(err, graph.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "node not found")
@@ -304,7 +351,7 @@ func (h *Handlers) GetLineage(w http.ResponseWriter, r *http.Request, id NodeId)
 
 // ── Changefeed ───────────────────────────────────────────────────────────────
 
-func (h *Handlers) ListChanges(w http.ResponseWriter, r *http.Request, params ListChangesParams) {
+func (h *Handlers) ListChanges(w http.ResponseWriter, r *http.Request, namespace Namespace, params ListChangesParams) {
 	sinceID := int64(0)
 	if params.Since != nil {
 		sinceID = *params.Since
@@ -314,7 +361,7 @@ func (h *Handlers) ListChanges(w http.ResponseWriter, r *http.Request, params Li
 		limit = *params.Limit
 	}
 
-	entries, err := h.clStore.ListSince(r.Context(), string(params.Type), sinceID, limit)
+	entries, err := h.clStore.ListSince(r.Context(), namespace, string(params.Type), sinceID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -353,7 +400,7 @@ func (h *Handlers) ListChanges(w http.ResponseWriter, r *http.Request, params Li
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handlers) Subscribe(w http.ResponseWriter, r *http.Request, params SubscribeParams) {
+func (h *Handlers) Subscribe(w http.ResponseWriter, r *http.Request, namespace Namespace, params SubscribeParams) {
 	// Parse node type filters
 	var nodeTypes []string
 	if params.Type != nil {
@@ -362,7 +409,7 @@ func (h *Handlers) Subscribe(w http.ResponseWriter, r *http.Request, params Subs
 		}
 	}
 
-	ch, unsub := h.bus.Subscribe(nodeTypes)
+	ch, unsub := h.bus.Subscribe(namespace, nodeTypes)
 	defer unsub()
 
 	// Set SSE headers
@@ -426,7 +473,7 @@ func (h *Handlers) Subscribe(w http.ResponseWriter, r *http.Request, params Subs
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // publishChange persists a change to PostgreSQL and publishes it to the event bus.
-func (h *Handlers) publishChange(r *http.Request, action events.ChangeAction, node graph.GenericNode, previous *graph.GenericNode) {
+func (h *Handlers) publishChange(r *http.Request, namespace string, action events.ChangeAction, node graph.GenericNode, previous *graph.GenericNode) {
 	nodeJSON, _ := json.Marshal(nodeToJSONMap(node))
 	var prevJSON json.RawMessage
 	if previous != nil {
@@ -442,11 +489,12 @@ func (h *Handlers) publishChange(r *http.Request, action events.ChangeAction, no
 	now := time.Now()
 
 	entry := changelog.Entry{
-		Action:   string(action),
-		NodeType: string(node.Type),
-		NodeID:   node.ID.String(),
-		Node:     nodeData,
-		Previous: prevJSON,
+		Namespace: namespace,
+		Action:    string(action),
+		NodeType:  string(node.Type),
+		NodeID:    node.ID.String(),
+		Node:      nodeData,
+		Previous:  prevJSON,
 	}
 
 	var changeID int64
@@ -461,6 +509,7 @@ func (h *Handlers) publishChange(r *http.Request, action events.ChangeAction, no
 
 	h.bus.Publish(events.ChangeEvent{
 		ChangeID:  changeID,
+		Namespace: namespace,
 		Action:    action,
 		NodeType:  string(node.Type),
 		NodeID:    node.ID,

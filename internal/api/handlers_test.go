@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/d4nyll/nodoplex/internal/changelog"
@@ -14,6 +15,8 @@ import (
 	"github.com/d4nyll/nodoplex/internal/graph"
 	"github.com/google/uuid"
 )
+
+const testNS = "ns-test"
 
 // mockGraphRepo implements graph.Repo for handler testing.
 type mockGraphRepo struct {
@@ -29,75 +32,96 @@ type mockGraphRepo struct {
 	getSubtreeFn  func(ctx context.Context, id uuid.UUID) (*graph.SubtreeNode, error)
 	getLineageFn  func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error)
 	getNodeTypeFn func(ctx context.Context, id uuid.UUID) (graph.NodeType, error)
+
+	mu         sync.Mutex
+	namespaces []string // namespace passed to each call, in order
 }
 
-func (m *mockGraphRepo) CreateNode(ctx context.Context, label string, props map[string]any) (graph.GenericNode, error) {
+func (m *mockGraphRepo) record(ns string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.namespaces = append(m.namespaces, ns)
+}
+
+func (m *mockGraphRepo) CreateNode(ctx context.Context, ns string, label string, props map[string]any) (graph.GenericNode, error) {
+	m.record(ns)
 	if m.createNodeFn != nil {
 		return m.createNodeFn(ctx, label, props)
 	}
 	return graph.GenericNode{}, nil
 }
-func (m *mockGraphRepo) GetNode(ctx context.Context, id uuid.UUID) (graph.GenericNode, error) {
+func (m *mockGraphRepo) GetNode(ctx context.Context, ns string, id uuid.UUID) (graph.GenericNode, error) {
+	m.record(ns)
 	if m.getNodeFn != nil {
 		return m.getNodeFn(ctx, id)
 	}
 	return graph.GenericNode{}, nil
 }
-func (m *mockGraphRepo) ListNodes(ctx context.Context, nodeType *string, status *string, search *string, offset, limit int) ([]graph.GenericNode, int, error) {
+func (m *mockGraphRepo) ListNodes(ctx context.Context, ns string, nodeType *string, status *string, search *string, offset, limit int) ([]graph.GenericNode, int, error) {
+	m.record(ns)
 	if m.listNodesFn != nil {
 		return m.listNodesFn(ctx, nodeType, status, search, offset, limit)
 	}
 	return nil, 0, nil
 }
-func (m *mockGraphRepo) UpdateNode(ctx context.Context, id uuid.UUID, props map[string]any) (graph.GenericNode, graph.GenericNode, error) {
+func (m *mockGraphRepo) UpdateNode(ctx context.Context, ns string, id uuid.UUID, props map[string]any) (graph.GenericNode, graph.GenericNode, error) {
+	m.record(ns)
 	if m.updateNodeFn != nil {
 		return m.updateNodeFn(ctx, id, props)
 	}
 	return graph.GenericNode{}, graph.GenericNode{}, nil
 }
-func (m *mockGraphRepo) DeleteNode(ctx context.Context, id uuid.UUID) (graph.GenericNode, error) {
+func (m *mockGraphRepo) DeleteNode(ctx context.Context, ns string, id uuid.UUID) (graph.GenericNode, error) {
+	m.record(ns)
 	if m.deleteNodeFn != nil {
 		return m.deleteNodeFn(ctx, id)
 	}
 	return graph.GenericNode{}, nil
 }
-func (m *mockGraphRepo) CreateEdge(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error {
+func (m *mockGraphRepo) CreateEdge(ctx context.Context, ns string, sourceID, targetID uuid.UUID, edgeType string) error {
+	m.record(ns)
 	if m.createEdgeFn != nil {
 		return m.createEdgeFn(ctx, sourceID, targetID, edgeType)
 	}
 	return nil
 }
-func (m *mockGraphRepo) DeleteEdge(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error {
+func (m *mockGraphRepo) DeleteEdge(ctx context.Context, ns string, sourceID, targetID uuid.UUID, edgeType string) error {
+	m.record(ns)
 	if m.deleteEdgeFn != nil {
 		return m.deleteEdgeFn(ctx, sourceID, targetID, edgeType)
 	}
 	return nil
 }
-func (m *mockGraphRepo) GetChildren(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error) {
+func (m *mockGraphRepo) GetChildren(ctx context.Context, ns string, id uuid.UUID) ([]graph.GenericNode, error) {
+	m.record(ns)
 	if m.getChildrenFn != nil {
 		return m.getChildrenFn(ctx, id)
 	}
 	return []graph.GenericNode{}, nil
 }
-func (m *mockGraphRepo) GetParents(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error) {
+func (m *mockGraphRepo) GetParents(ctx context.Context, ns string, id uuid.UUID) ([]graph.GenericNode, error) {
+	m.record(ns)
 	if m.getParentsFn != nil {
 		return m.getParentsFn(ctx, id)
 	}
 	return []graph.GenericNode{}, nil
 }
-func (m *mockGraphRepo) GetSubtree(ctx context.Context, id uuid.UUID) (*graph.SubtreeNode, error) {
+func (m *mockGraphRepo) GetSubtree(ctx context.Context, ns string, id uuid.UUID) (*graph.SubtreeNode, error) {
+	m.record(ns)
 	if m.getSubtreeFn != nil {
 		return m.getSubtreeFn(ctx, id)
 	}
 	return nil, nil
 }
-func (m *mockGraphRepo) GetLineage(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error) {
+func (m *mockGraphRepo) GetLineage(ctx context.Context, ns string, id uuid.UUID) ([]graph.GenericNode, error) {
+	m.record(ns)
 	if m.getLineageFn != nil {
 		return m.getLineageFn(ctx, id)
 	}
 	return nil, nil
 }
-func (m *mockGraphRepo) GetNodeType(ctx context.Context, id uuid.UUID) (graph.NodeType, error) {
+func (m *mockGraphRepo) GetNodeType(ctx context.Context, ns string, id uuid.UUID) (graph.NodeType, error) {
+	m.record(ns)
 	if m.getNodeTypeFn != nil {
 		return m.getNodeTypeFn(ctx, id)
 	}
@@ -117,7 +141,7 @@ func setupTestServer(repo *mockGraphRepo) *httptest.Server {
 	// This is acceptable for handler tests since we test that the HTTP response is correct.
 	handlers := NewHandlers(graphSvc, nil, bus)
 	mux := http.NewServeMux()
-	handler := HandlerFromMux(handlers, mux)
+	handler := NewRouter(handlers, mux)
 	return httptest.NewServer(handler)
 }
 
@@ -140,7 +164,7 @@ func TestE2E_CreateNode_Vision(t *testing.T) {
 	defer ts.Close()
 
 	body := `{"type":"vision","title":"E2E Vision","description":"Created via e2e test"}`
-	resp, err := http.Post(ts.URL+"/nodes", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/namespaces/"+testNS+"/nodes", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -185,7 +209,7 @@ func TestE2E_CreateNode_Task(t *testing.T) {
 	defer ts.Close()
 
 	body := `{"type":"task","title":"Test Task","status":"backlog"}`
-	resp, err := http.Post(ts.URL+"/nodes", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/namespaces/"+testNS+"/nodes", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -228,7 +252,7 @@ func TestE2E_CreateNode_GitRef(t *testing.T) {
 	defer ts.Close()
 
 	body := `{"type":"gitref","repo":"my-repo","refType":"commit","ref":"abc123"}`
-	resp, err := http.Post(ts.URL+"/nodes", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/namespaces/"+testNS+"/nodes", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -244,7 +268,7 @@ func TestE2E_CreateNode_InvalidJSON(t *testing.T) {
 	ts := setupTestServer(&mockGraphRepo{})
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/nodes", "application/json", strings.NewReader("{invalid"))
+	resp, err := http.Post(ts.URL+"/namespaces/"+testNS+"/nodes", "application/json", strings.NewReader("{invalid"))
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -272,7 +296,7 @@ func TestE2E_GetNode_Success(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes/" + id.String())
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + id.String())
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -307,7 +331,7 @@ func TestE2E_GetNode_NotFound(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes/" + uuid.New().String())
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + uuid.New().String())
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -333,7 +357,7 @@ func TestE2E_ListNodes(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes?type=vision")
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes?type=vision")
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -373,7 +397,7 @@ func TestE2E_UpdateNode_Success(t *testing.T) {
 	defer ts.Close()
 
 	body := `{"title":"After"}`
-	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/nodes/"+id.String(), strings.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/namespaces/"+testNS+"/nodes/"+id.String(), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -400,7 +424,7 @@ func TestE2E_UpdateNode_EmptyBody(t *testing.T) {
 	ts := setupTestServer(&mockGraphRepo{})
 	defer ts.Close()
 
-	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/nodes/"+uuid.New().String(), strings.NewReader(`{}`))
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/namespaces/"+testNS+"/nodes/"+uuid.New().String(), strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -424,7 +448,7 @@ func TestE2E_UpdateNode_NotFound(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/nodes/"+uuid.New().String(), strings.NewReader(`{"title":"X"}`))
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/namespaces/"+testNS+"/nodes/"+uuid.New().String(), strings.NewReader(`{"title":"X"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -450,7 +474,7 @@ func TestE2E_DeleteNode_Success(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/nodes/"+id.String(), nil)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/namespaces/"+testNS+"/nodes/"+id.String(), nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request error: %v", err)
@@ -473,7 +497,7 @@ func TestE2E_DeleteNode_NotFound(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/nodes/"+uuid.New().String(), nil)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/namespaces/"+testNS+"/nodes/"+uuid.New().String(), nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request error: %v", err)
@@ -507,7 +531,7 @@ func TestE2E_CreateEdge_Success(t *testing.T) {
 	defer ts.Close()
 
 	body := `{"sourceId":"` + sourceID.String() + `","targetId":"` + targetID.String() + `","type":"BREAKS_DOWN_TO"}`
-	resp, err := http.Post(ts.URL+"/edges", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/namespaces/"+testNS+"/edges", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -532,7 +556,7 @@ func TestE2E_CreateEdge_InvalidType(t *testing.T) {
 	defer ts.Close()
 
 	body := `{"sourceId":"` + uuid.New().String() + `","targetId":"` + uuid.New().String() + `","type":"INVALID"}`
-	resp, err := http.Post(ts.URL+"/edges", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/namespaces/"+testNS+"/edges", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -557,7 +581,7 @@ func TestE2E_DeleteEdge_Success(t *testing.T) {
 	defer ts.Close()
 
 	body := `{"sourceId":"` + uuid.New().String() + `","targetId":"` + uuid.New().String() + `","type":"BREAKS_DOWN_TO"}`
-	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/edges", strings.NewReader(body))
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/namespaces/"+testNS+"/edges", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -582,7 +606,7 @@ func TestE2E_DeleteEdge_NotFound(t *testing.T) {
 	defer ts.Close()
 
 	body := `{"sourceId":"` + uuid.New().String() + `","targetId":"` + uuid.New().String() + `","type":"BREAKS_DOWN_TO"}`
-	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/edges", strings.NewReader(body))
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/namespaces/"+testNS+"/edges", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -616,7 +640,7 @@ func TestE2E_GetChildren_Success(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes/" + id.String() + "/children")
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + id.String() + "/children")
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -646,7 +670,7 @@ func TestE2E_GetChildren_NodeNotFound(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes/" + uuid.New().String() + "/children")
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + uuid.New().String() + "/children")
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -677,7 +701,7 @@ func TestE2E_GetParents_Success(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes/" + id.String() + "/parents")
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + id.String() + "/parents")
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -719,7 +743,7 @@ func TestE2E_GetSubtree_Success(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes/" + id.String() + "/subtree")
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + id.String() + "/subtree")
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -749,7 +773,7 @@ func TestE2E_GetSubtree_NotFound(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes/" + uuid.New().String() + "/subtree")
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + uuid.New().String() + "/subtree")
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -781,7 +805,7 @@ func TestE2E_GetLineage_Success(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes/" + id.String() + "/lineage")
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + id.String() + "/lineage")
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -811,7 +835,7 @@ func TestE2E_GetLineage_NotFound(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes/" + uuid.New().String() + "/lineage")
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + uuid.New().String() + "/lineage")
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -834,7 +858,7 @@ func TestE2E_ResponseContentType(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	resp, err := http.Get(ts.URL + "/nodes")
+	resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes")
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -888,7 +912,7 @@ func TestE2E_FullCRUDFlow(t *testing.T) {
 
 	// 1. Create
 	createBody := `{"type":"vision","title":"Original"}`
-	createResp, err := http.Post(ts.URL+"/nodes", "application/json", strings.NewReader(createBody))
+	createResp, err := http.Post(ts.URL+"/namespaces/"+testNS+"/nodes", "application/json", strings.NewReader(createBody))
 	if err != nil {
 		t.Fatalf("create error: %v", err)
 	}
@@ -898,7 +922,7 @@ func TestE2E_FullCRUDFlow(t *testing.T) {
 	}
 
 	// 2. Read
-	getResp, err := http.Get(ts.URL + "/nodes/" + id.String())
+	getResp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + id.String())
 	if err != nil {
 		t.Fatalf("get error: %v", err)
 	}
@@ -908,7 +932,7 @@ func TestE2E_FullCRUDFlow(t *testing.T) {
 	}
 
 	// 3. Update
-	updateReq, _ := http.NewRequest(http.MethodPatch, ts.URL+"/nodes/"+id.String(), strings.NewReader(`{"title":"Updated"}`))
+	updateReq, _ := http.NewRequest(http.MethodPatch, ts.URL+"/namespaces/"+testNS+"/nodes/"+id.String(), strings.NewReader(`{"title":"Updated"}`))
 	updateReq.Header.Set("Content-Type", "application/json")
 	updateResp, err := http.DefaultClient.Do(updateReq)
 	if err != nil {
@@ -920,7 +944,7 @@ func TestE2E_FullCRUDFlow(t *testing.T) {
 	}
 
 	// 4. Delete
-	deleteReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/nodes/"+id.String(), nil)
+	deleteReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/namespaces/"+testNS+"/nodes/"+id.String(), nil)
 	deleteResp, err := http.DefaultClient.Do(deleteReq)
 	if err != nil {
 		t.Fatalf("delete error: %v", err)
@@ -936,3 +960,113 @@ var _ ServerInterface = (*Handlers)(nil)
 
 // Verify that changelog.Store exists and has expected methods
 var _ = changelog.Entry{}
+
+// ── Namespace Tests ──────────────────────────────────────────────────────────
+
+func TestE2E_MissingNamespace(t *testing.T) {
+	repo := &mockGraphRepo{}
+	ts := setupTestServer(repo)
+	defer ts.Close()
+
+	id := uuid.New().String()
+	tests := []struct{ method, path string }{
+		{http.MethodGet, "/nodes"},
+		{http.MethodPost, "/nodes"},
+		{http.MethodGet, "/nodes/" + id},
+		{http.MethodPatch, "/nodes/" + id},
+		{http.MethodDelete, "/nodes/" + id},
+		{http.MethodGet, "/nodes/" + id + "/children"},
+		{http.MethodGet, "/nodes/" + id + "/parents"},
+		{http.MethodGet, "/nodes/" + id + "/subtree"},
+		{http.MethodGet, "/nodes/" + id + "/lineage"},
+		{http.MethodPost, "/edges"},
+		{http.MethodDelete, "/edges"},
+		{http.MethodGet, "/changes?type=task"},
+		{http.MethodGet, "/subscribe"},
+		{http.MethodGet, "/namespaces//nodes"},
+		{http.MethodGet, "/namespaces//nodes/" + id},
+		{http.MethodGet, "/namespaces/./nodes"},
+		{http.MethodGet, "/namespaces/../nodes"},
+		{http.MethodGet, "/namespaces/%2E%2E/nodes/" + id},
+		{http.MethodGet, "/namespaces/"},
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for _, tt := range tests {
+		req, _ := http.NewRequest(tt.method, ts.URL+tt.path, strings.NewReader(`{}`))
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", tt.method, tt.path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s %s: status = %d, want 400; body: %s", tt.method, tt.path, resp.StatusCode, body)
+		}
+	}
+	if len(repo.namespaces) != 0 {
+		t.Errorf("repo was called %d times, want 0", len(repo.namespaces))
+	}
+}
+
+func TestE2E_InvalidNamespace(t *testing.T) {
+	repo := &mockGraphRepo{}
+	ts := setupTestServer(repo)
+	defer ts.Close()
+
+	for _, ns := range []string{strings.Repeat("a", graph.MaxNamespaceLength+1), "org%FF", "%00", "%2E%2E"} {
+		resp, err := http.Get(ts.URL + "/namespaces/" + ns + "/nodes")
+		if err != nil {
+			t.Fatalf("request error: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("namespace %q: status = %d, want 400", ns, resp.StatusCode)
+		}
+	}
+	if len(repo.namespaces) != 0 {
+		t.Errorf("repo was called %d times, want 0", len(repo.namespaces))
+	}
+}
+
+func TestE2E_NamespaceFromPathReachesRepo(t *testing.T) {
+	repo := &mockGraphRepo{
+		getNodeFn: func(ctx context.Context, id uuid.UUID) (graph.GenericNode, error) {
+			return graph.GenericNode{}, graph.ErrNotFound
+		},
+	}
+	ts := setupTestServer(repo)
+	defer ts.Close()
+
+	// The namespace is opaque: an escaped slash is part of the value.
+	resp, err := http.Get(ts.URL + "/namespaces/org%2F42/nodes/" + uuid.New().String())
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+	if len(repo.namespaces) != 1 || repo.namespaces[0] != "org/42" {
+		t.Errorf("repo namespaces = %q, want [\"org/42\"]", repo.namespaces)
+	}
+}
+
+func TestE2E_DeleteEdge_UnknownType(t *testing.T) {
+	repo := &mockGraphRepo{}
+	ts := setupTestServer(repo)
+	defer ts.Close()
+
+	body := `{"sourceId":"` + uuid.New().String() + `","targetId":"` + uuid.New().String() + `","type":"X]->() DETACH DELETE b //"}`
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/namespaces/"+testNS+"/edges", strings.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+	if len(repo.namespaces) != 0 {
+		t.Errorf("repo was called %d times, want 0", len(repo.namespaces))
+	}
+}

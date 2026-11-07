@@ -20,6 +20,7 @@ const (
 // ChangeEvent represents a single change to a node.
 type ChangeEvent struct {
 	ChangeID  int64           `json:"changeId"`
+	Namespace string          `json:"-"`
 	Action    ChangeAction    `json:"action"`
 	NodeType  string          `json:"nodeType"`
 	NodeID    uuid.UUID       `json:"nodeId"`
@@ -28,9 +29,11 @@ type ChangeEvent struct {
 	Timestamp time.Time       `json:"timestamp"`
 }
 
-// subscriber holds a channel and the node types it is interested in.
+// subscriber holds a channel, its namespace, and the node types it is
+// interested in.
 type subscriber struct {
 	ch        chan ChangeEvent
+	namespace string
 	nodeTypes map[string]bool // empty means all types
 }
 
@@ -48,10 +51,10 @@ func NewEventBus() *EventBus {
 	}
 }
 
-// Subscribe registers a new subscriber filtered by node types.
-// If nodeTypes is empty, all events are received.
-// Returns a read-only channel and an unsubscribe function.
-func (b *EventBus) Subscribe(nodeTypes []string) (<-chan ChangeEvent, func()) {
+// Subscribe registers a new subscriber that receives events in namespace ns,
+// filtered by node types. If nodeTypes is empty, all events in the namespace
+// are received. Returns a read-only channel and an unsubscribe function.
+func (b *EventBus) Subscribe(ns string, nodeTypes []string) (<-chan ChangeEvent, func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -65,6 +68,7 @@ func (b *EventBus) Subscribe(nodeTypes []string) (<-chan ChangeEvent, func()) {
 
 	sub := &subscriber{
 		ch:        make(chan ChangeEvent, 64),
+		namespace: ns,
 		nodeTypes: typeFilter,
 	}
 	b.subscribers[id] = sub
@@ -79,13 +83,16 @@ func (b *EventBus) Subscribe(nodeTypes []string) (<-chan ChangeEvent, func()) {
 	return sub.ch, unsubscribe
 }
 
-// Publish sends an event to all matching subscribers.
+// Publish sends an event to all matching subscribers in the event's namespace.
 // Non-blocking: if a subscriber's channel is full, the event is dropped for that subscriber.
 func (b *EventBus) Publish(event ChangeEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	for _, sub := range b.subscribers {
+		if sub.namespace != event.Namespace {
+			continue
+		}
 		if len(sub.nodeTypes) > 0 && !sub.nodeTypes[event.NodeType] {
 			continue
 		}

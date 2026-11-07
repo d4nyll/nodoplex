@@ -3,10 +3,13 @@ package graph
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+const testNS = "ns-test"
 
 // mockRepo implements the Repo interface for testing.
 type mockRepo struct {
@@ -22,86 +25,100 @@ type mockRepo struct {
 	getSubtreeFn  func(ctx context.Context, id uuid.UUID) (*SubtreeNode, error)
 	getLineageFn  func(ctx context.Context, id uuid.UUID) ([]GenericNode, error)
 	getNodeTypeFn func(ctx context.Context, id uuid.UUID) (NodeType, error)
+
+	namespaces []string // namespace passed to each call, in order
 }
 
-func (m *mockRepo) CreateNode(ctx context.Context, label string, props map[string]any) (GenericNode, error) {
+func (m *mockRepo) CreateNode(ctx context.Context, ns string, label string, props map[string]any) (GenericNode, error) {
+	m.namespaces = append(m.namespaces, ns)
 	if m.createNodeFn != nil {
 		return m.createNodeFn(ctx, label, props)
 	}
 	return GenericNode{}, nil
 }
 
-func (m *mockRepo) GetNode(ctx context.Context, id uuid.UUID) (GenericNode, error) {
+func (m *mockRepo) GetNode(ctx context.Context, ns string, id uuid.UUID) (GenericNode, error) {
+	m.namespaces = append(m.namespaces, ns)
 	if m.getNodeFn != nil {
 		return m.getNodeFn(ctx, id)
 	}
 	return GenericNode{}, nil
 }
 
-func (m *mockRepo) ListNodes(ctx context.Context, nodeType *string, status *string, search *string, offset, limit int) ([]GenericNode, int, error) {
+func (m *mockRepo) ListNodes(ctx context.Context, ns string, nodeType *string, status *string, search *string, offset, limit int) ([]GenericNode, int, error) {
+	m.namespaces = append(m.namespaces, ns)
 	if m.listNodesFn != nil {
 		return m.listNodesFn(ctx, nodeType, status, search, offset, limit)
 	}
 	return nil, 0, nil
 }
 
-func (m *mockRepo) UpdateNode(ctx context.Context, id uuid.UUID, props map[string]any) (GenericNode, GenericNode, error) {
+func (m *mockRepo) UpdateNode(ctx context.Context, ns string, id uuid.UUID, props map[string]any) (GenericNode, GenericNode, error) {
+	m.namespaces = append(m.namespaces, ns)
 	if m.updateNodeFn != nil {
 		return m.updateNodeFn(ctx, id, props)
 	}
 	return GenericNode{}, GenericNode{}, nil
 }
 
-func (m *mockRepo) DeleteNode(ctx context.Context, id uuid.UUID) (GenericNode, error) {
+func (m *mockRepo) DeleteNode(ctx context.Context, ns string, id uuid.UUID) (GenericNode, error) {
+	m.namespaces = append(m.namespaces, ns)
 	if m.deleteNodeFn != nil {
 		return m.deleteNodeFn(ctx, id)
 	}
 	return GenericNode{}, nil
 }
 
-func (m *mockRepo) CreateEdge(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error {
+func (m *mockRepo) CreateEdge(ctx context.Context, ns string, sourceID, targetID uuid.UUID, edgeType string) error {
+	m.namespaces = append(m.namespaces, ns)
 	if m.createEdgeFn != nil {
 		return m.createEdgeFn(ctx, sourceID, targetID, edgeType)
 	}
 	return nil
 }
 
-func (m *mockRepo) DeleteEdge(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error {
+func (m *mockRepo) DeleteEdge(ctx context.Context, ns string, sourceID, targetID uuid.UUID, edgeType string) error {
+	m.namespaces = append(m.namespaces, ns)
 	if m.deleteEdgeFn != nil {
 		return m.deleteEdgeFn(ctx, sourceID, targetID, edgeType)
 	}
 	return nil
 }
 
-func (m *mockRepo) GetChildren(ctx context.Context, id uuid.UUID) ([]GenericNode, error) {
+func (m *mockRepo) GetChildren(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error) {
+	m.namespaces = append(m.namespaces, ns)
 	if m.getChildrenFn != nil {
 		return m.getChildrenFn(ctx, id)
 	}
 	return nil, nil
 }
 
-func (m *mockRepo) GetParents(ctx context.Context, id uuid.UUID) ([]GenericNode, error) {
+func (m *mockRepo) GetParents(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error) {
+	m.namespaces = append(m.namespaces, ns)
 	if m.getParentsFn != nil {
 		return m.getParentsFn(ctx, id)
 	}
 	return nil, nil
 }
 
-func (m *mockRepo) GetSubtree(ctx context.Context, id uuid.UUID) (*SubtreeNode, error) {
+func (m *mockRepo) GetSubtree(ctx context.Context, ns string, id uuid.UUID) (*SubtreeNode, error) {
+	m.namespaces = append(m.namespaces, ns)
 	if m.getSubtreeFn != nil {
 		return m.getSubtreeFn(ctx, id)
 	}
 	return nil, nil
 }
 
-func (m *mockRepo) GetLineage(ctx context.Context, id uuid.UUID) ([]GenericNode, error) {
+func (m *mockRepo) GetLineage(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error) {
+	m.namespaces = append(m.namespaces, ns)
 	if m.getLineageFn != nil {
 		return m.getLineageFn(ctx, id)
 	}
 	return nil, nil
 }
 
-func (m *mockRepo) GetNodeType(ctx context.Context, id uuid.UUID) (NodeType, error) {
+func (m *mockRepo) GetNodeType(ctx context.Context, ns string, id uuid.UUID) (NodeType, error) {
+	m.namespaces = append(m.namespaces, ns)
 	if m.getNodeTypeFn != nil {
 		return m.getNodeTypeFn(ctx, id)
 	}
@@ -126,7 +143,7 @@ func TestService_CreateNode_Success(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	node, err := svc.CreateNode(context.Background(), NodeTypeVision, map[string]any{"title": "Test Vision"})
+	node, err := svc.CreateNode(context.Background(), testNS, NodeTypeVision, map[string]any{"title": "Test Vision"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,7 +163,7 @@ func TestService_CreateNode_GeneratesUUID(t *testing.T) {
 
 	svc := NewService(repo)
 	props := map[string]any{"title": "No ID"}
-	_, err := svc.CreateNode(context.Background(), NodeTypeGoal, props)
+	_, err := svc.CreateNode(context.Background(), testNS, NodeTypeGoal, props)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -167,7 +184,7 @@ func TestService_CreateNode_PreservesExistingID(t *testing.T) {
 
 	svc := NewService(repo)
 	props := map[string]any{"id": existingID, "title": "With ID"}
-	_, err := svc.CreateNode(context.Background(), NodeTypeGoal, props)
+	_, err := svc.CreateNode(context.Background(), testNS, NodeTypeGoal, props)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -178,7 +195,7 @@ func TestService_CreateNode_PreservesExistingID(t *testing.T) {
 
 func TestService_CreateNode_UnknownType(t *testing.T) {
 	svc := NewService(&mockRepo{})
-	_, err := svc.CreateNode(context.Background(), NodeType("unknown"), map[string]any{})
+	_, err := svc.CreateNode(context.Background(), testNS, NodeType("unknown"), map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for unknown node type")
 	}
@@ -211,7 +228,7 @@ func TestService_CreateEdge_ValidBreaksDownTo(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	err := svc.CreateEdge(context.Background(), visionID, goalID, EdgeTypeBreaksDownTo)
+	err := svc.CreateEdge(context.Background(), testNS, visionID, goalID, EdgeTypeBreaksDownTo)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +257,7 @@ func TestService_CreateEdge_ValidImplementedBy(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	err := svc.CreateEdge(context.Background(), taskID, gitRefID, EdgeTypeImplementedBy)
+	err := svc.CreateEdge(context.Background(), testNS, taskID, gitRefID, EdgeTypeImplementedBy)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,7 +265,7 @@ func TestService_CreateEdge_ValidImplementedBy(t *testing.T) {
 
 func TestService_CreateEdge_UnknownEdgeType(t *testing.T) {
 	svc := NewService(&mockRepo{})
-	err := svc.CreateEdge(context.Background(), uuid.New(), uuid.New(), EdgeType("UNKNOWN"))
+	err := svc.CreateEdge(context.Background(), testNS, uuid.New(), uuid.New(), EdgeType("UNKNOWN"))
 	if err == nil {
 		t.Fatal("expected error for unknown edge type")
 	}
@@ -272,7 +289,7 @@ func TestService_CreateEdge_InvalidSourceType(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	err := svc.CreateEdge(context.Background(), gitRefID, goalID, EdgeTypeBreaksDownTo)
+	err := svc.CreateEdge(context.Background(), testNS, gitRefID, goalID, EdgeTypeBreaksDownTo)
 	if err == nil {
 		t.Fatal("expected error for invalid source type")
 	}
@@ -297,7 +314,7 @@ func TestService_CreateEdge_InvalidTargetType(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	err := svc.CreateEdge(context.Background(), visionID, featureID, EdgeTypeBreaksDownTo)
+	err := svc.CreateEdge(context.Background(), testNS, visionID, featureID, EdgeTypeBreaksDownTo)
 	if err == nil {
 		t.Fatal("expected error for invalid target type")
 	}
@@ -315,7 +332,7 @@ func TestService_CreateEdge_SourceNotFound(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	err := svc.CreateEdge(context.Background(), uuid.New(), uuid.New(), EdgeTypeBreaksDownTo)
+	err := svc.CreateEdge(context.Background(), testNS, uuid.New(), uuid.New(), EdgeTypeBreaksDownTo)
 	if err == nil {
 		t.Fatal("expected error when source not found")
 	}
@@ -354,7 +371,7 @@ func TestService_CreateEdge_AllValidPairs(t *testing.T) {
 			}
 
 			svc := NewService(repo)
-			err := svc.CreateEdge(context.Background(), sourceID, targetID, tt.edgeType)
+			err := svc.CreateEdge(context.Background(), testNS, sourceID, targetID, tt.edgeType)
 			if err != nil {
 				t.Errorf("unexpected error for valid pair: %v", err)
 			}
@@ -392,7 +409,7 @@ func TestService_CreateEdge_InvalidPairs(t *testing.T) {
 			}
 
 			svc := NewService(repo)
-			err := svc.CreateEdge(context.Background(), sourceID, targetID, tt.edgeType)
+			err := svc.CreateEdge(context.Background(), testNS, sourceID, targetID, tt.edgeType)
 			if err == nil {
 				t.Error("expected error for invalid pair")
 			}
@@ -410,7 +427,7 @@ func TestService_GetChildren_NodeNotFound(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	_, err := svc.GetChildren(context.Background(), uuid.New())
+	_, err := svc.GetChildren(context.Background(), testNS, uuid.New())
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -430,7 +447,7 @@ func TestService_GetChildren_Success(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	children, err := svc.GetChildren(context.Background(), parentID)
+	children, err := svc.GetChildren(context.Background(), testNS, parentID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -450,7 +467,7 @@ func TestService_GetParents_NodeNotFound(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	_, err := svc.GetParents(context.Background(), uuid.New())
+	_, err := svc.GetParents(context.Background(), testNS, uuid.New())
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -464,7 +481,7 @@ func TestService_GetLineage_NodeNotFound(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	_, err := svc.GetLineage(context.Background(), uuid.New())
+	_, err := svc.GetLineage(context.Background(), testNS, uuid.New())
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -485,7 +502,7 @@ func TestService_GetNode_Delegates(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	node, err := svc.GetNode(context.Background(), id)
+	node, err := svc.GetNode(context.Background(), testNS, id)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -504,7 +521,7 @@ func TestService_DeleteNode_Delegates(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	node, err := svc.DeleteNode(context.Background(), id)
+	node, err := svc.DeleteNode(context.Background(), testNS, id)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -525,7 +542,7 @@ func TestService_UpdateNode_Delegates(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	before, after, err := svc.UpdateNode(context.Background(), id, map[string]any{"title": "After"})
+	before, after, err := svc.UpdateNode(context.Background(), testNS, id, map[string]any{"title": "After"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -556,7 +573,7 @@ func TestService_DeleteEdge_Delegates(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	err := svc.DeleteEdge(context.Background(), sourceID, targetID, "BREAKS_DOWN_TO")
+	err := svc.DeleteEdge(context.Background(), testNS, sourceID, targetID, EdgeTypeBreaksDownTo)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -579,7 +596,7 @@ func TestService_GetSubtree_Delegates(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	result, err := svc.GetSubtree(context.Background(), id)
+	result, err := svc.GetSubtree(context.Background(), testNS, id)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -605,7 +622,7 @@ func TestService_ListNodes_Delegates(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	nodes, total, err := svc.ListNodes(context.Background(), &nodeType, nil, nil, 10, 20)
+	nodes, total, err := svc.ListNodes(context.Background(), testNS, &nodeType, nil, nil, 10, 20)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -614,5 +631,105 @@ func TestService_ListNodes_Delegates(t *testing.T) {
 	}
 	if len(nodes) != 1 {
 		t.Errorf("len(nodes) = %d, want 1", len(nodes))
+	}
+}
+
+// ── Namespace Tests ──────────────────────────────────────────────────────────
+
+func TestValidateNamespace(t *testing.T) {
+	tests := []struct {
+		name  string
+		ns    string
+		valid bool
+	}{
+		{"simple", "org_123", true},
+		{"uuid", "0b6f7c1e-3a0e-4b8e-9a51-6d3c2d7c1f00", true},
+		{"slash and spaces", "a/b c", true},
+		{"unicode", "größe", true},
+		{"max length", strings.Repeat("a", MaxNamespaceLength), true},
+		{"max length multibyte", strings.Repeat("é", MaxNamespaceLength), true},
+		{"empty", "", false},
+		{"too long", strings.Repeat("a", MaxNamespaceLength+1), false},
+		{"too long multibyte", strings.Repeat("é", MaxNamespaceLength+1), false},
+		{"invalid utf-8", "org\xff", false},
+		{"nul", "org\x00", false},
+		{"newline", "org\nfake log line", false},
+		{"dot", ".", false},
+		{"dot dot", "..", false},
+		{"dots inside", "a..b", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateNamespace(tt.ns)
+			if tt.valid && err != nil {
+				t.Errorf("ValidateNamespace(%q) = %v, want nil", tt.ns, err)
+			}
+			if !tt.valid && !errors.Is(err, ErrInvalidNamespace) {
+				t.Errorf("ValidateNamespace(%q) = %v, want ErrInvalidNamespace", tt.ns, err)
+			}
+		})
+	}
+}
+
+func TestService_CreateNode_InvalidNamespace(t *testing.T) {
+	repo := &mockRepo{}
+	svc := NewService(repo)
+	_, err := svc.CreateNode(context.Background(), "", NodeTypeVision, map[string]any{"title": "x"})
+	if !errors.Is(err, ErrInvalidNamespace) {
+		t.Fatalf("err = %v, want ErrInvalidNamespace", err)
+	}
+	if len(repo.namespaces) != 0 {
+		t.Errorf("repo was called %d times, want 0", len(repo.namespaces))
+	}
+}
+
+func TestService_PassesNamespaceToEveryRepoCall(t *testing.T) {
+	// CreateEdge looks up the source (vision) then the target (goal).
+	calls := 0
+	repo := &mockRepo{
+		getNodeTypeFn: func(ctx context.Context, id uuid.UUID) (NodeType, error) {
+			calls++
+			if calls == 2 {
+				return NodeTypeGoal, nil
+			}
+			return NodeTypeVision, nil
+		},
+	}
+	svc := NewService(repo)
+	ctx := context.Background()
+	id := uuid.New()
+
+	_, _ = svc.CreateNode(ctx, testNS, NodeTypeVision, map[string]any{})
+	_, _ = svc.GetNode(ctx, testNS, id)
+	_, _, _ = svc.ListNodes(ctx, testNS, nil, nil, nil, 0, 10)
+	_, _, _ = svc.UpdateNode(ctx, testNS, id, map[string]any{"title": "x"})
+	_, _ = svc.DeleteNode(ctx, testNS, id)
+	_ = svc.CreateEdge(ctx, testNS, id, uuid.New(), EdgeTypeBreaksDownTo)
+	_ = svc.DeleteEdge(ctx, testNS, id, uuid.New(), EdgeTypeBreaksDownTo)
+	_, _ = svc.GetChildren(ctx, testNS, id)
+	_, _ = svc.GetParents(ctx, testNS, id)
+	_, _ = svc.GetSubtree(ctx, testNS, id)
+	_, _ = svc.GetLineage(ctx, testNS, id)
+
+	// CreateEdge makes 3 calls; GetChildren, GetParents and GetLineage make 2.
+	if len(repo.namespaces) != 16 {
+		t.Errorf("repo calls = %d, want 16", len(repo.namespaces))
+	}
+	for i, ns := range repo.namespaces {
+		if ns != testNS {
+			t.Errorf("call %d namespace = %q, want %q", i, ns, testNS)
+		}
+	}
+}
+
+func TestService_DeleteEdge_UnknownEdgeType(t *testing.T) {
+	repo := &mockRepo{}
+	svc := NewService(repo)
+	err := svc.DeleteEdge(context.Background(), testNS, uuid.New(), uuid.New(), EdgeType("X]->() DETACH DELETE b //"))
+	if !errors.Is(err, ErrUnknownEdgeType) {
+		t.Fatalf("err = %v, want ErrUnknownEdgeType", err)
+	}
+	if len(repo.namespaces) != 0 {
+		t.Errorf("repo was called %d times, want 0", len(repo.namespaces))
 	}
 }

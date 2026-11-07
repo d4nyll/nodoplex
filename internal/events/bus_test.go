@@ -10,6 +10,7 @@ import (
 
 func makeEvent(action ChangeAction, nodeType string) ChangeEvent {
 	return ChangeEvent{
+		Namespace: "ns",
 		ChangeID:  1,
 		Action:    action,
 		NodeType:  nodeType,
@@ -30,7 +31,7 @@ func TestNewEventBus(t *testing.T) {
 
 func TestSubscribeAndPublish(t *testing.T) {
 	bus := NewEventBus()
-	ch, unsub := bus.Subscribe(nil)
+	ch, unsub := bus.Subscribe("ns", nil)
 	defer unsub()
 
 	event := makeEvent(ActionCreated, "vision")
@@ -53,7 +54,7 @@ func TestSubscribeWithTypeFilter(t *testing.T) {
 	bus := NewEventBus()
 
 	// Subscribe only to "task" events
-	ch, unsub := bus.Subscribe([]string{"task"})
+	ch, unsub := bus.Subscribe("ns", []string{"task"})
 	defer unsub()
 
 	// Publish a "vision" event - should NOT be received
@@ -86,7 +87,7 @@ func TestSubscribeWithTypeFilter(t *testing.T) {
 
 func TestSubscribeNoFilter_ReceivesAll(t *testing.T) {
 	bus := NewEventBus()
-	ch, unsub := bus.Subscribe(nil)
+	ch, unsub := bus.Subscribe("ns", nil)
 	defer unsub()
 
 	types := []string{"vision", "goal", "task", "gitref"}
@@ -113,7 +114,7 @@ func TestSubscribeNoFilter_ReceivesAll(t *testing.T) {
 
 func TestUnsubscribe(t *testing.T) {
 	bus := NewEventBus()
-	ch, unsub := bus.Subscribe(nil)
+	ch, unsub := bus.Subscribe("ns", nil)
 
 	// Unsubscribe
 	unsub()
@@ -131,9 +132,9 @@ func TestUnsubscribe(t *testing.T) {
 func TestMultipleSubscribers(t *testing.T) {
 	bus := NewEventBus()
 
-	ch1, unsub1 := bus.Subscribe(nil)
+	ch1, unsub1 := bus.Subscribe("ns", nil)
 	defer unsub1()
-	ch2, unsub2 := bus.Subscribe(nil)
+	ch2, unsub2 := bus.Subscribe("ns", nil)
 	defer unsub2()
 
 	event := makeEvent(ActionDeleted, "goal")
@@ -153,16 +154,17 @@ func TestMultipleSubscribers(t *testing.T) {
 
 func TestPublishDropsWhenChannelFull(t *testing.T) {
 	bus := NewEventBus()
-	ch, unsub := bus.Subscribe(nil)
+	ch, unsub := bus.Subscribe("ns", nil)
 	defer unsub()
 
 	// Fill the buffer (capacity is 64)
 	for i := range 65 {
 		bus.Publish(ChangeEvent{
-			ChangeID: int64(i),
-			Action:   ActionCreated,
-			NodeType: "vision",
-			NodeID:   uuid.New(),
+			Namespace: "ns",
+			ChangeID:  int64(i),
+			Action:    ActionCreated,
+			NodeType:  "vision",
+			NodeID:    uuid.New(),
 		})
 	}
 
@@ -189,7 +191,7 @@ func TestConcurrentPublishAndSubscribe(t *testing.T) {
 	const numPublishers = 20
 	const eventsPerPublisher = 5
 
-	ch, unsub := bus.Subscribe(nil)
+	ch, unsub := bus.Subscribe("ns", nil)
 
 	// Drain events concurrently
 	var received int64
@@ -210,10 +212,11 @@ func TestConcurrentPublishAndSubscribe(t *testing.T) {
 			defer publishWg.Done()
 			for j := range eventsPerPublisher {
 				bus.Publish(ChangeEvent{
-					ChangeID: int64(publisherID*eventsPerPublisher + j),
-					Action:   ActionCreated,
-					NodeType: "task",
-					NodeID:   uuid.New(),
+					Namespace: "ns",
+					ChangeID:  int64(publisherID*eventsPerPublisher + j),
+					Action:    ActionCreated,
+					NodeType:  "task",
+					NodeID:    uuid.New(),
 				})
 			}
 		}(i)
@@ -252,7 +255,7 @@ func TestConcurrentSubscribeUnsubscribe(t *testing.T) {
 	for range iterations {
 		go func() {
 			defer wg.Done()
-			_, unsub := bus.Subscribe(nil)
+			_, unsub := bus.Subscribe("ns", nil)
 			time.Sleep(time.Millisecond)
 			unsub()
 		}()
@@ -263,10 +266,11 @@ func TestConcurrentSubscribeUnsubscribe(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			bus.Publish(ChangeEvent{
-				ChangeID: int64(id),
-				Action:   ActionCreated,
-				NodeType: "vision",
-				NodeID:   uuid.New(),
+				Namespace: "ns",
+				ChangeID:  int64(id),
+				Action:    ActionCreated,
+				NodeType:  "vision",
+				NodeID:    uuid.New(),
 			})
 		}(i)
 	}
@@ -277,7 +281,7 @@ func TestConcurrentSubscribeUnsubscribe(t *testing.T) {
 
 func TestSubscribeWithEmptySliceReceivesAll(t *testing.T) {
 	bus := NewEventBus()
-	ch, unsub := bus.Subscribe([]string{})
+	ch, unsub := bus.Subscribe("ns", []string{})
 	defer unsub()
 
 	bus.Publish(makeEvent(ActionCreated, "feature"))
@@ -295,9 +299,9 @@ func TestSubscribeWithEmptySliceReceivesAll(t *testing.T) {
 func TestSubscriberIDsAreUnique(t *testing.T) {
 	bus := NewEventBus()
 
-	_, unsub1 := bus.Subscribe(nil)
-	_, unsub2 := bus.Subscribe(nil)
-	_, unsub3 := bus.Subscribe(nil)
+	_, unsub1 := bus.Subscribe("ns", nil)
+	_, unsub2 := bus.Subscribe("ns", nil)
+	_, unsub3 := bus.Subscribe("ns", nil)
 
 	bus.mu.RLock()
 	if len(bus.subscribers) != 3 {
@@ -321,4 +325,30 @@ func TestSubscriberIDsAreUnique(t *testing.T) {
 		t.Errorf("expected 0 subscribers, got %d", len(bus.subscribers))
 	}
 	bus.mu.RUnlock()
+}
+
+func TestPublishOnlyReachesSameNamespace(t *testing.T) {
+	bus := NewEventBus()
+	chA, unsubA := bus.Subscribe("a", nil)
+	defer unsubA()
+	chB, unsubB := bus.Subscribe("b", nil)
+	defer unsubB()
+
+	ev := makeEvent(ActionCreated, "task")
+	ev.Namespace = "a"
+	bus.Publish(ev)
+
+	select {
+	case got := <-chA:
+		if got.NodeID != ev.NodeID {
+			t.Errorf("subscriber a got node %s, want %s", got.NodeID, ev.NodeID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscriber a did not receive the event")
+	}
+	select {
+	case got := <-chB:
+		t.Fatalf("subscriber b received an event from namespace a: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
 }

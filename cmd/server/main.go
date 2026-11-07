@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +19,15 @@ import (
 )
 
 func main() {
+	assignNamespace := flag.String("assign-namespace", "",
+		"one-off migration: move every node and changelog entry that has no namespace into this namespace, then exit")
+	flag.Parse()
+	if *assignNamespace != "" {
+		if err := graph.ValidateNamespace(*assignNamespace); err != nil {
+			log.Fatalf("assign-namespace: %v", err)
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -51,6 +61,28 @@ func main() {
 	}
 	log.Println("postgres: connected and migrations applied")
 
+	// ── Nodes without a namespace ────────────────────────────
+	if *assignNamespace != "" {
+		nodes, err := db.AssignNamespace(ctx, neo4jDriver, *assignNamespace)
+		if err != nil {
+			log.Fatalf("assign-namespace: %v", err)
+		}
+		entries, err := changelog.AssignNamespace(ctx, pgPool, *assignNamespace)
+		if err != nil {
+			log.Fatalf("assign-namespace: %v", err)
+		}
+		log.Printf("assign-namespace: moved %d nodes and %d changelog entries into namespace %q", nodes, entries, *assignNamespace)
+		return
+	}
+	legacy, err := db.CountNodesWithoutNamespace(ctx, neo4jDriver)
+	if err != nil {
+		log.Fatalf("neo4j: %v", err)
+	}
+	if legacy > 0 {
+		log.Printf("WARNING: %d nodes have no namespace and are not served by any endpoint. "+
+			"Run the server once with -assign-namespace=<namespace> to move them into a namespace.", legacy)
+	}
+
 	// ── Services ─────────────────────────────────────────────
 	repo := graph.NewRepository(neo4jDriver)
 	graphSvc := graph.NewService(repo)
@@ -70,7 +102,7 @@ func main() {
 	})
 
 	// Register generated API routes on the same mux
-	apiHandler := api.HandlerFromMux(handlers, mux)
+	apiHandler := api.NewRouter(handlers, mux)
 
 	// Wrap with middleware
 	wrapped := withCORS(withLogging(withRecovery(apiHandler)))

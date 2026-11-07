@@ -6,7 +6,15 @@ info:
     goals, features, requirements, tasks, git refs) are stored as nodes in a
     Neo4j graph connected by directed edges, giving every stakeholder a single
     shared view of how work connects to company goals.
-  version: "0.1.0"
+
+
+    Every node belongs to exactly one namespace, an opaque string chosen by
+    the caller when the node is created. Every operation is scoped to the
+    namespace in its path: nodes in other namespaces behave exactly like
+    nodes that don't exist, and edges can only connect nodes in the same
+    namespace. Requests to the unprefixed paths (for example `/nodes`) are
+    rejected with 400.
+  version: "0.2.0"
 
 servers:
   - url: http://localhost:8080
@@ -14,7 +22,10 @@ servers:
 
 paths:
   # ── Nodes CRUD ──────────────────────────────────────────────
-  /nodes:
+  /namespaces/{namespace}/nodes:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+
     post:
       operationId: createNode
       summary: Create a node
@@ -73,8 +84,9 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
 
-  /nodes/{id}:
+  /namespaces/{namespace}/nodes/{id}:
     parameters:
+      - $ref: "#/components/parameters/Namespace"
       - $ref: "#/components/parameters/NodeId"
 
     get:
@@ -87,6 +99,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NodeWithRelationships"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -117,11 +131,15 @@ paths:
       responses:
         "204":
           description: Node deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
 
   # ── Edges ───────────────────────────────────────────────────
-  /edges:
+  /namespaces/{namespace}/edges:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
     post:
       operationId: createEdge
       summary: Create an edge between two nodes
@@ -155,12 +173,15 @@ paths:
       responses:
         "204":
           description: Edge deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
 
   # ── Graph Traversal ─────────────────────────────────────────
-  /nodes/{id}/children:
+  /namespaces/{namespace}/nodes/{id}/children:
     parameters:
+      - $ref: "#/components/parameters/Namespace"
       - $ref: "#/components/parameters/NodeId"
     get:
       operationId: getChildren
@@ -172,11 +193,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NodeArray"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /nodes/{id}/parents:
+  /namespaces/{namespace}/nodes/{id}/parents:
     parameters:
+      - $ref: "#/components/parameters/Namespace"
       - $ref: "#/components/parameters/NodeId"
     get:
       operationId: getParents
@@ -188,11 +212,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NodeArray"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /nodes/{id}/subtree:
+  /namespaces/{namespace}/nodes/{id}/subtree:
     parameters:
+      - $ref: "#/components/parameters/Namespace"
       - $ref: "#/components/parameters/NodeId"
     get:
       operationId: getSubtree
@@ -204,11 +231,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TreeNode"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /nodes/{id}/lineage:
+  /namespaces/{namespace}/nodes/{id}/lineage:
     parameters:
+      - $ref: "#/components/parameters/Namespace"
       - $ref: "#/components/parameters/NodeId"
     get:
       operationId: getLineage
@@ -220,17 +250,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NodeArray"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
 
   # ── Changefeed ──────────────────────────────────────────────
-  /subscribe:
+  /namespaces/{namespace}/subscribe:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
     get:
       operationId: subscribe
       summary: SSE stream of node changes
       description: >
-        Server-Sent Events stream filtered by node type(s). If no type param
-        is provided, all changes are streamed. Each event includes a changeId
+        Server-Sent Events stream of node changes in the namespace, filtered
+        by node type(s). If no type param is provided, all changes in the
+        namespace are streamed. Each event includes a changeId
         that clients can use to resume via the /changes endpoint.
       parameters:
         - name: type
@@ -249,8 +284,12 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
 
-  /changes:
+  /namespaces/{namespace}/changes:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
     get:
       operationId: listChanges
       summary: Fetch persisted changes since a given changeId
@@ -290,6 +329,19 @@ paths:
 # ═══════════════════════════════════════════════════════════════
 components:
   parameters:
+    Namespace:
+      name: namespace
+      in: path
+      required: true
+      description: >
+        Opaque identifier of the namespace the request operates in: 1 to 256
+        characters of valid UTF-8, with no control characters, and not `.`
+        or `..`. Nodoplex attaches no meaning to the value.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+
     NodeId:
       name: id
       in: path

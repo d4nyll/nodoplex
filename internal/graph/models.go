@@ -1,8 +1,42 @@
 package graph
 
 import (
+	"errors"
+	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
 	"github.com/google/uuid"
 )
+
+// MaxNamespaceLength is the maximum length of a namespace in characters
+// (Unicode code points), matching maxLength in the OpenAPI spec.
+const MaxNamespaceLength = 256
+
+// ErrInvalidNamespace is returned when a namespace fails ValidateNamespace.
+var ErrInvalidNamespace = errors.New("invalid namespace")
+
+// ValidateNamespace checks that ns is usable as a namespace. Namespaces are
+// opaque: any UTF-8 string of 1 to MaxNamespaceLength characters is valid,
+// except that it can't contain control characters (PostgreSQL can't store
+// NUL) and can't be "." or ".." (the HTTP router resolves those as path
+// segments).
+func ValidateNamespace(ns string) error {
+	switch {
+	case ns == "":
+		return fmt.Errorf("%w: must not be empty", ErrInvalidNamespace)
+	case !utf8.ValidString(ns):
+		return fmt.Errorf("%w: must be valid UTF-8", ErrInvalidNamespace)
+	case utf8.RuneCountInString(ns) > MaxNamespaceLength:
+		return fmt.Errorf("%w: must be at most %d characters", ErrInvalidNamespace, MaxNamespaceLength)
+	case strings.IndexFunc(ns, unicode.IsControl) >= 0:
+		return fmt.Errorf("%w: must not contain control characters", ErrInvalidNamespace)
+	case ns == "." || ns == "..":
+		return fmt.Errorf("%w: must not be %q", ErrInvalidNamespace, ns)
+	}
+	return nil
+}
 
 // NodeType enumerates the allowed node types.
 type NodeType string
