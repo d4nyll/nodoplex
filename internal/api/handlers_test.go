@@ -1042,14 +1042,33 @@ func TestE2E_InvalidNamespace(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	for _, ns := range []string{strings.Repeat("a", graph.MaxNamespaceLength+1), "org%FF", "%00", "%2E%2E", "org%2F42", "a@b", "a%20b", "gr%C3%B6%C3%9Fe", ".a"} {
-		resp, err := http.Get(ts.URL + "/namespaces/" + ns + "/nodes")
+	const notAllowed = ", which is not allowed; allowed characters are ASCII letters, digits, '-', '_', ':' and '.'"
+	tests := []struct{ ns, want string }{
+		{"", "namespace is empty; it must be 1 to 256 characters long"},
+		{strings.Repeat("a", graph.MaxNamespaceLength+1), "namespace is 257 characters long; the maximum is 256"},
+		{"%2Fteam", "namespace contains '/'" + notAllowed},
+		{"org%2F42", "namespace contains '/'" + notAllowed},
+		{"org%FF", `namespace contains "\xff"` + notAllowed},
+		{"%00", `namespace contains "\x00"` + notAllowed},
+		{"a@b", "namespace contains '@'" + notAllowed},
+		{"a%20b", "namespace contains ' '" + notAllowed},
+		{"gr%C3%B6%C3%9Fe", "namespace contains 'ö'" + notAllowed},
+		{".", "namespace starts with '.', which is not allowed"},
+		{"%2E%2E", "namespace starts with '.', which is not allowed"},
+		{".a", "namespace starts with '.', which is not allowed"},
+		{"a.", "namespace ends with '.', which is not allowed"},
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for _, tt := range tests {
+		resp, err := client.Get(ts.URL + "/namespaces/" + tt.ns + "/nodes")
 		if err != nil {
 			t.Fatalf("request error: %v", err)
 		}
+		var body Error
+		json.NewDecoder(resp.Body).Decode(&body)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("namespace %q: status = %d, want 400", ns, resp.StatusCode)
+		if resp.StatusCode != http.StatusBadRequest || body.Message != tt.want {
+			t.Errorf("namespace %q: %d %q, want 400 %q", tt.ns, resp.StatusCode, body.Message, tt.want)
 		}
 	}
 	if len(repo.namespaces) != 0 {
