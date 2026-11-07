@@ -296,3 +296,15 @@ func TestToPropsAndBack_RoundTrip(t *testing.T) {
 		t.Errorf("Priority mismatch: %d != %d", *restored.Priority, *original.Priority)
 	}
 }
+
+func TestAllowedEdges_DependsOnRequiresSameType(t *testing.T) {
+	deps := AllowedEdges[EdgeTypeDependsOn]
+	if len(deps) != len(NodeTypeToLabel) {
+		t.Errorf("AllowedEdges[DEPENDS_ON] has %d source types, want %d", len(deps), len(NodeTypeToLabel))
+	}
+	for nt := range NodeTypeToLabel {
+		if got := deps[nt]; got != nt {
+			t.Errorf("AllowedEdges[DEPENDS_ON][%q] = %q, want %q", nt, got, nt)
+		}
+	}
+}

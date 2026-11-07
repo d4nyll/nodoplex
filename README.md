@@ -9,6 +9,8 @@ Vision → Goal → Feature → Requirement → Task → GitRef
          (BREAKS_DOWN_TO)              (IMPLEMENTED_BY)
 ```
 
+A node can also depend on another node of the same type through a `DEPENDS_ON` edge, for example requirement B depends on requirement A.
+
 - **Backend**: Go standard library `net/http` (Go 1.22+)
 - **Graph DB**: Neo4j (stores all project entities and relationships)
 - **Change log**: PostgreSQL (persists an append-only changelog for the changefeed)
@@ -101,6 +103,18 @@ curl -s -X POST http://localhost:8080/namespaces/acme/edges \
   -d '{"sourceId":"<task-id>","targetId":"<gitref-id>","type":"IMPLEMENTED_BY"}' | jq
 ```
 
+### Record that one requirement depends on another
+
+```bash
+curl -s -X POST http://localhost:8080/namespaces/acme/edges \
+  -H 'Content-Type: application/json' \
+  -d '{"sourceId":"<requirement-b-id>","targetId":"<requirement-a-id>","type":"DEPENDS_ON"}' | jq
+
+# What requirement B depends on, and what depends on requirement A
+curl -s http://localhost:8080/namespaces/acme/nodes/<requirement-b-id>/dependencies | jq
+curl -s http://localhost:8080/namespaces/acme/nodes/<requirement-a-id>/dependents | jq
+```
+
 ### List features
 
 ```bash
@@ -163,6 +177,21 @@ Every operation sees only its own namespace:
 - A request to an unprefixed path such as `/nodes`, or with an empty namespace such as `/namespaces//nodes`, gets a 400. So does a namespace that is too long, isn't valid UTF-8, contains a control character, or is `.` or `..`.
 
 Nodes carry a `:Node` label and a `namespace` property in Neo4j. Lookups by id seek the unique constraint on `(:Node).id` and lists seek the index on `(:Node).namespace`; `NODOPLEX_INTEGRATION=1 go test ./internal/graph -run Integration` checks the query plans.
+
+### Dependencies
+
+A `DEPENDS_ON` edge from node B to node A means B depends on A. `POST /namespaces/{namespace}/edges` with `"type":"DEPENDS_ON"` creates one:
+
+- Both nodes must be in the request's namespace (404 otherwise) and have the same type (400 otherwise).
+- A node can't depend on itself (400).
+- An edge that would close a cycle of `DEPENDS_ON` edges gets a 409, whether the cycle is direct (A depends on B, B on A) or runs through other nodes.
+- Creating an edge that already exists returns 201 and leaves the single existing edge in place, so a client can retry safely.
+
+Concurrent requests can't form a cycle between them: the server checks for a cycle and creates the edge in one transaction that holds a per-namespace lock, so dependency creations in one namespace run one at a time.
+
+`GET /namespaces/{namespace}/nodes/{id}/dependencies` lists the nodes a node depends on, and `GET /namespaces/{namespace}/nodes/{id}/dependents` lists the nodes that depend on it. `DELETE /namespaces/{namespace}/edges` removes a `DEPENDS_ON` edge like any other, and deleting a node removes its `DEPENDS_ON` edges. Children, parents, subtree, and lineage follow `BREAKS_DOWN_TO` and `IMPLEMENTED_BY` only, so `DEPENDS_ON` edges never appear in them.
+
+The changelog, `/changes` and `/subscribe` record node changes only. Creating or deleting an edge of any type writes no changelog entry and sends no event.
 
 ### Assigning a namespace to existing nodes
 

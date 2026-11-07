@@ -390,3 +390,164 @@ func TestIntegration_AssignNamespace(t *testing.T) {
 		t.Errorf("CountNodesWithoutNamespace after migration = %d, %v; want 0", count, err)
 	}
 }
+
+func (e *integrationEnv) countDependsOn(t *testing.T, source, target string) int64 {
+	t.Helper()
+	res, err := neo4j.ExecuteQuery(context.Background(), e.driver,
+		"MATCH ({id: $s})-[r:DEPENDS_ON]->({id: $t}) RETURN count(r) AS c",
+		map[string]any{"s": source, "t": target}, neo4j.EagerResultTransformer)
+	if err != nil {
+		t.Fatalf("count DEPENDS_ON: %v", err)
+	}
+	c, _ := res.Records[0].Get("c")
+	return c.(int64)
+}
+
+func (e *integrationEnv) ids(t *testing.T, ns, path string) []string {
+	t.Helper()
+	status, b := e.call(t, http.MethodGet, "/namespaces/"+ns+path, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET %s in %s: %d %s", path, ns, status, b)
+	}
+	return nodeIDs(t, b)
+}
+
+// TestIntegration_Dependencies covers creating, validating, reading and
+// deleting DEPENDS_ON edges over HTTP.
+func TestIntegration_Dependencies(t *testing.T) {
+	e := newIntegrationEnv(t)
+	ns := newNamespace()
+	feature := e.createNode(t, ns, map[string]any{"type": "feature", "title": "F"})
+	r1 := e.createNode(t, ns, map[string]any{"type": "requirement", "title": "R1"})
+	r2 := e.createNode(t, ns, map[string]any{"type": "requirement", "title": "R2"})
+	r3 := e.createNode(t, ns, map[string]any{"type": "requirement", "title": "R3"})
+	task := e.createNode(t, ns, map[string]any{"type": "task", "title": "T", "status": "backlog"})
+	e.mustCreateEdge(t, ns, feature, r1, "BREAKS_DOWN_TO")
+	e.mustCreateEdge(t, ns, r1, task, "BREAKS_DOWN_TO")
+
+	// R2 depends on R1; creating it again is a no-op.
+	e.mustCreateEdge(t, ns, r2, r1, "DEPENDS_ON")
+	e.mustCreateEdge(t, ns, r2, r1, "DEPENDS_ON")
+	if c := e.countDependsOn(t, r2, r1); c != 1 {
+		t.Errorf("R2->R1 DEPENDS_ON edges = %d, want 1", c)
+	}
+
+	rejected := []struct {
+		name           string
+		source, target string
+		want           int
+	}{
+		{"self", r1, r1, http.StatusBadRequest},
+		{"different types", r1, task, http.StatusBadRequest},
+		{"different types reversed", task, r1, http.StatusBadRequest},
+		{"direct cycle", r1, r2, http.StatusConflict},
+		{"missing target", r1, uuid.NewString(), http.StatusNotFound},
+	}
+	for _, c := range rejected {
+		if status, b := e.createEdge(t, ns, c.source, c.target, "DEPENDS_ON"); status != c.want {
+			t.Errorf("%s: %d %s, want %d", c.name, status, b, c.want)
+		}
+	}
+	// R3 depends on R2, so R1 depending on R3 would close R1->R3->R2->R1.
+	e.mustCreateEdge(t, ns, r3, r2, "DEPENDS_ON")
+	if status, b := e.createEdge(t, ns, r1, r3, "DEPENDS_ON"); status != http.StatusConflict {
+		t.Errorf("transitive cycle: %d %s, want 409", status, b)
+	}
+
+	reads := []struct {
+		path string
+		want []string
+	}{
+		{"/nodes/" + r2 + "/dependencies", []string{r1}},
+		{"/nodes/" + r1 + "/dependents", []string{r2}},
+		{"/nodes/" + r2 + "/dependents", []string{r3}},
+		{"/nodes/" + r1 + "/dependencies", []string{}},
+		// Traversals follow the breakdown tree only.
+		{"/nodes/" + r1 + "/children", []string{task}},
+		{"/nodes/" + r1 + "/parents", []string{feature}},
+		{"/nodes/" + r2 + "/children", []string{}},
+		{"/nodes/" + r2 + "/parents", []string{}},
+		{"/nodes/" + r1 + "/lineage", []string{feature, r1}},
+		{"/nodes/" + r2 + "/lineage", []string{}},
+	}
+	for _, rd := range reads {
+		if got := e.ids(t, ns, rd.path); !sameIDs(got, rd.want) {
+			t.Errorf("GET %s = %v, want %v", rd.path, got, rd.want)
+		}
+	}
+	// R2 depends on R1 and R3 depends on R2, so a subtree that followed
+	// DEPENDS_ON would contain R1 under R2 and R2 under R3.
+	for _, c := range []struct{ root, hidden string }{{r2, r1}, {r3, r2}, {feature, r2}} {
+		_, b := e.call(t, http.MethodGet, "/namespaces/"+ns+"/nodes/"+c.root+"/subtree", nil)
+		if strings.Contains(string(b), c.hidden) {
+			t.Errorf("subtree of %s contains %s, which is only reachable through DEPENDS_ON: %s", c.root, c.hidden, b)
+		}
+	}
+	_, b := e.call(t, http.MethodGet, "/namespaces/"+ns+"/nodes/"+r1, nil)
+	var rel struct{ Children, Parents []struct{ Id string } }
+	json.Unmarshal(b, &rel)
+	if len(rel.Children) != 1 || rel.Children[0].Id != task || len(rel.Parents) != 1 || rel.Parents[0].Id != feature {
+		t.Errorf("GET R1 relationships = %s, want only T as child and F as parent", b)
+	}
+
+	// Deleting R3->R2 removes the path, so R1 may now depend on R3.
+	status, b := e.call(t, http.MethodDelete, "/namespaces/"+ns+"/edges",
+		map[string]string{"sourceId": r3, "targetId": r2, "type": "DEPENDS_ON"})
+	if status != http.StatusNoContent {
+		t.Fatalf("delete R3->R2: %d %s", status, b)
+	}
+	e.mustCreateEdge(t, ns, r1, r3, "DEPENDS_ON")
+
+	// Deleting R1 removes its DEPENDS_ON edges in both directions.
+	if status, b := e.call(t, http.MethodDelete, "/namespaces/"+ns+"/nodes/"+r1, nil); status != http.StatusNoContent {
+		t.Fatalf("delete R1: %d %s", status, b)
+	}
+	if got := e.ids(t, ns, "/nodes/"+r2+"/dependencies"); len(got) != 0 {
+		t.Errorf("R2 dependencies after deleting R1 = %v, want none", got)
+	}
+	if got := e.ids(t, ns, "/nodes/"+r3+"/dependents"); len(got) != 0 {
+		t.Errorf("R3 dependents after deleting R1 = %v, want none", got)
+	}
+	if c := e.countDependsOn(t, r2, r1) + e.countDependsOn(t, r1, r3); c != 0 {
+		t.Errorf("%d DEPENDS_ON edges still touch R1", c)
+	}
+}
+
+// TestIntegration_DependenciesNamespaceIsolation checks the dependency
+// endpoints and DEPENDS_ON edges against nodes in another namespace.
+func TestIntegration_DependenciesNamespaceIsolation(t *testing.T) {
+	e := newIntegrationEnv(t)
+	nsA, nsB := newNamespace(), newNamespace()
+	a1 := e.createNode(t, nsA, map[string]any{"type": "task", "title": "A1", "status": "backlog"})
+	a2 := e.createNode(t, nsA, map[string]any{"type": "task", "title": "A2", "status": "backlog"})
+	e.mustCreateEdge(t, nsA, a1, a2, "DEPENDS_ON")
+	b1 := e.createNode(t, nsB, map[string]any{"type": "task", "title": "B1", "status": "backlog"})
+
+	for _, path := range []string{"/dependencies", "/dependents"} {
+		gotStatus, gotBody := e.call(t, http.MethodGet, "/namespaces/"+nsB+"/nodes/"+a1+path, nil)
+		wantStatus, wantBody := e.call(t, http.MethodGet, "/namespaces/"+nsB+"/nodes/"+uuid.NewString()+path, nil)
+		if gotStatus != http.StatusNotFound || gotStatus != wantStatus || !bytes.Equal(gotBody, wantBody) {
+			t.Errorf("GET %s of A's node in B: %d %s, want %d %s", path, gotStatus, gotBody, wantStatus, wantBody)
+		}
+	}
+
+	// A's nodes can't be linked from B, and B's node can't be linked to A's.
+	for _, c := range []struct{ ns, source, target string }{
+		{nsB, a2, a1}, {nsA, a1, b1}, {nsA, b1, a1}, {nsB, b1, a1}, {nsB, a1, b1},
+	} {
+		if status, b := e.createEdge(t, c.ns, c.source, c.target, "DEPENDS_ON"); status != http.StatusNotFound {
+			t.Errorf("DEPENDS_ON %s->%s via %s: %d %s, want 404", c.source, c.target, c.ns, status, b)
+		}
+	}
+	status, b := e.call(t, http.MethodDelete, "/namespaces/"+nsB+"/edges",
+		map[string]string{"sourceId": a1, "targetId": a2, "type": "DEPENDS_ON"})
+	if status != http.StatusNotFound {
+		t.Errorf("delete A's DEPENDS_ON from B: %d %s, want 404", status, b)
+	}
+	if c := e.countDependsOn(t, a1, a2); c != 1 {
+		t.Errorf("A1->A2 DEPENDS_ON edges = %d, want 1", c)
+	}
+	if c := e.countDependsOn(t, a1, b1) + e.countDependsOn(t, b1, a1); c != 0 {
+		t.Errorf("found %d DEPENDS_ON edges between namespaces, want 0", c)
+	}
+}

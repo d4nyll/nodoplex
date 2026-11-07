@@ -20,18 +20,21 @@ const testNS = "ns-test"
 
 // mockGraphRepo implements graph.Repo for handler testing.
 type mockGraphRepo struct {
-	createNodeFn  func(ctx context.Context, label string, props map[string]any) (graph.GenericNode, error)
-	getNodeFn     func(ctx context.Context, id uuid.UUID) (graph.GenericNode, error)
-	listNodesFn   func(ctx context.Context, nodeType *string, status *string, search *string, offset, limit int) ([]graph.GenericNode, int, error)
-	updateNodeFn  func(ctx context.Context, id uuid.UUID, props map[string]any) (graph.GenericNode, graph.GenericNode, error)
-	deleteNodeFn  func(ctx context.Context, id uuid.UUID) (graph.GenericNode, error)
-	createEdgeFn  func(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error
-	deleteEdgeFn  func(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error
-	getChildrenFn func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error)
-	getParentsFn  func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error)
-	getSubtreeFn  func(ctx context.Context, id uuid.UUID) (*graph.SubtreeNode, error)
-	getLineageFn  func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error)
-	getNodeTypeFn func(ctx context.Context, id uuid.UUID) (graph.NodeType, error)
+	createNodeFn       func(ctx context.Context, label string, props map[string]any) (graph.GenericNode, error)
+	getNodeFn          func(ctx context.Context, id uuid.UUID) (graph.GenericNode, error)
+	listNodesFn        func(ctx context.Context, nodeType *string, status *string, search *string, offset, limit int) ([]graph.GenericNode, int, error)
+	updateNodeFn       func(ctx context.Context, id uuid.UUID, props map[string]any) (graph.GenericNode, graph.GenericNode, error)
+	deleteNodeFn       func(ctx context.Context, id uuid.UUID) (graph.GenericNode, error)
+	createEdgeFn       func(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error
+	deleteEdgeFn       func(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error
+	getChildrenFn      func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error)
+	getParentsFn       func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error)
+	getSubtreeFn       func(ctx context.Context, id uuid.UUID) (*graph.SubtreeNode, error)
+	getLineageFn       func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error)
+	getNodeTypeFn      func(ctx context.Context, id uuid.UUID) (graph.NodeType, error)
+	createDependencyFn func(ctx context.Context, sourceID, targetID uuid.UUID) error
+	getDependenciesFn  func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error)
+	getDependentsFn    func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error)
 
 	mu         sync.Mutex
 	namespaces []string // namespace passed to each call, in order
@@ -143,6 +146,30 @@ func setupTestServer(repo *mockGraphRepo) *httptest.Server {
 	mux := http.NewServeMux()
 	handler := NewRouter(handlers, mux)
 	return httptest.NewServer(handler)
+}
+
+func (m *mockGraphRepo) CreateDependency(ctx context.Context, ns string, sourceID, targetID uuid.UUID) error {
+	m.record(ns)
+	if m.createDependencyFn != nil {
+		return m.createDependencyFn(ctx, sourceID, targetID)
+	}
+	return nil
+}
+
+func (m *mockGraphRepo) GetDependencies(ctx context.Context, ns string, id uuid.UUID) ([]graph.GenericNode, error) {
+	m.record(ns)
+	if m.getDependenciesFn != nil {
+		return m.getDependenciesFn(ctx, id)
+	}
+	return []graph.GenericNode{}, nil
+}
+
+func (m *mockGraphRepo) GetDependents(ctx context.Context, ns string, id uuid.UUID) ([]graph.GenericNode, error) {
+	m.record(ns)
+	if m.getDependentsFn != nil {
+		return m.getDependentsFn(ctx, id)
+	}
+	return []graph.GenericNode{}, nil
 }
 
 // ── CreateNode E2E Tests ─────────────────────────────────────────────────────
@@ -979,6 +1006,8 @@ func TestE2E_MissingNamespace(t *testing.T) {
 		{http.MethodGet, "/nodes/" + id + "/parents"},
 		{http.MethodGet, "/nodes/" + id + "/subtree"},
 		{http.MethodGet, "/nodes/" + id + "/lineage"},
+		{http.MethodGet, "/nodes/" + id + "/dependencies"},
+		{http.MethodGet, "/nodes/" + id + "/dependents"},
 		{http.MethodPost, "/edges"},
 		{http.MethodDelete, "/edges"},
 		{http.MethodGet, "/changes?type=task"},
@@ -1068,5 +1097,96 @@ func TestE2E_DeleteEdge_UnknownType(t *testing.T) {
 	}
 	if len(repo.namespaces) != 0 {
 		t.Errorf("repo was called %d times, want 0", len(repo.namespaces))
+	}
+}
+
+// ── Dependency Tests ─────────────────────────────────────────────────────────
+
+func TestE2E_CreateEdge_DependsOnStatuses(t *testing.T) {
+	tests := []struct {
+		name    string
+		repoErr error
+		self    bool
+		want    int
+	}{
+		{"created", nil, false, http.StatusCreated},
+		{"cycle", graph.ErrDependencyCycle, false, http.StatusConflict},
+		{"not found", graph.ErrNotFound, false, http.StatusNotFound},
+		{"self", nil, true, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &mockGraphRepo{
+				getNodeTypeFn: func(ctx context.Context, id uuid.UUID) (graph.NodeType, error) {
+					return graph.NodeTypeRequirement, nil
+				},
+				createDependencyFn: func(ctx context.Context, s, tg uuid.UUID) error { return tt.repoErr },
+			}
+			ts := setupTestServer(repo)
+			defer ts.Close()
+
+			source, target := uuid.New().String(), uuid.New().String()
+			if tt.self {
+				target = source
+			}
+			body := `{"sourceId":"` + source + `","targetId":"` + target + `","type":"DEPENDS_ON"}`
+			resp, err := http.Post(ts.URL+"/namespaces/"+testNS+"/edges", "application/json", strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("request error: %v", err)
+			}
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != tt.want {
+				t.Errorf("status = %d, want %d; body: %s", resp.StatusCode, tt.want, b)
+			}
+		})
+	}
+}
+
+func TestE2E_GetDependenciesAndDependents(t *testing.T) {
+	dep := graph.GenericNode{ID: uuid.New(), Type: graph.NodeTypeTask, Title: strPtr("dep"), Status: strPtr("backlog")}
+	repo := &mockGraphRepo{
+		getDependenciesFn: func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error) {
+			return []graph.GenericNode{dep}, nil
+		},
+		getDependentsFn: func(ctx context.Context, id uuid.UUID) ([]graph.GenericNode, error) {
+			return []graph.GenericNode{}, nil
+		},
+	}
+	ts := setupTestServer(repo)
+	defer ts.Close()
+
+	for path, want := range map[string]int{"dependencies": 1, "dependents": 0} {
+		resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + uuid.New().String() + "/" + path)
+		if err != nil {
+			t.Fatalf("request error: %v", err)
+		}
+		var arr NodeArray
+		json.NewDecoder(resp.Body).Decode(&arr)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || len(arr.Nodes) != want {
+			t.Errorf("%s: status %d, %d nodes; want 200, %d nodes", path, resp.StatusCode, len(arr.Nodes), want)
+		}
+	}
+}
+
+func TestE2E_GetDependenciesAndDependents_NotFound(t *testing.T) {
+	repo := &mockGraphRepo{
+		getNodeFn: func(ctx context.Context, id uuid.UUID) (graph.GenericNode, error) {
+			return graph.GenericNode{}, graph.ErrNotFound
+		},
+	}
+	ts := setupTestServer(repo)
+	defer ts.Close()
+
+	for _, path := range []string{"dependencies", "dependents"} {
+		resp, err := http.Get(ts.URL + "/namespaces/" + testNS + "/nodes/" + uuid.New().String() + "/" + path)
+		if err != nil {
+			t.Fatalf("request error: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", path, resp.StatusCode)
+		}
 	}
 }

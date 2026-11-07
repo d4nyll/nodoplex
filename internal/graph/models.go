@@ -76,6 +76,10 @@ type EdgeType string
 const (
 	EdgeTypeBreaksDownTo  EdgeType = "BREAKS_DOWN_TO"
 	EdgeTypeImplementedBy EdgeType = "IMPLEMENTED_BY"
+	// EdgeTypeDependsOn means the source node depends on the target node.
+	// Both nodes have the same type. Traversals of the breakdown tree
+	// (children, parents, subtree, lineage) ignore it.
+	EdgeTypeDependsOn EdgeType = "DEPENDS_ON"
 )
 
 // AllowedEdges defines which source->target node type pairs are valid for each edge type.
@@ -88,6 +92,14 @@ var AllowedEdges = map[EdgeType]map[NodeType]NodeType{
 	},
 	EdgeTypeImplementedBy: {
 		NodeTypeTask: NodeTypeGitRef,
+	},
+	EdgeTypeDependsOn: {
+		NodeTypeVision:      NodeTypeVision,
+		NodeTypeGoal:        NodeTypeGoal,
+		NodeTypeFeature:     NodeTypeFeature,
+		NodeTypeRequirement: NodeTypeRequirement,
+		NodeTypeTask:        NodeTypeTask,
+		NodeTypeGitRef:      NodeTypeGitRef,
 	},
 }
 

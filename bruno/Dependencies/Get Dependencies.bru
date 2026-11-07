@@ -1,0 +1,11 @@
+meta {
+  name: Get Dependencies
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/namespaces/{{namespace}}/nodes/{{nodeId}}/dependencies
+  body: none
+  auth: none
+}

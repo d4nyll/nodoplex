@@ -23,11 +23,18 @@ type Repo interface {
 	GetSubtree(ctx context.Context, ns string, id uuid.UUID) (*SubtreeNode, error)
 	GetLineage(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error)
 	GetNodeType(ctx context.Context, ns string, id uuid.UUID) (NodeType, error)
+	CreateDependency(ctx context.Context, ns string, sourceID, targetID uuid.UUID) error
+	GetDependencies(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error)
+	GetDependents(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error)
 }
 
 // ErrUnknownEdgeType is returned when an edge type is not one of the
 // EdgeType constants.
 var ErrUnknownEdgeType = errors.New("unknown edge type")
+
+// ErrDependencyCycle is returned when a DEPENDS_ON edge would close a cycle of
+// DEPENDS_ON edges.
+var ErrDependencyCycle = errors.New("invalid edge: DEPENDS_ON would create a dependency cycle")
 
 // Service provides business logic on top of the graph Repository.
 type Service struct {
@@ -78,12 +85,17 @@ func (s *Service) DeleteNode(ctx context.Context, ns string, id uuid.UUID) (Gene
 }
 
 // CreateEdge creates a relationship between two nodes after validating the
-// parent-child type constraint.
+// source -> target type constraint. A DEPENDS_ON edge must also not point at
+// its own source or close a cycle; creating one that already exists is a
+// no-op.
 func (s *Service) CreateEdge(ctx context.Context, ns string, sourceID, targetID uuid.UUID, edgeType EdgeType) error {
 	// Validate edge type
 	allowedPairs, ok := AllowedEdges[edgeType]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrUnknownEdgeType, string(edgeType))
+	}
+	if edgeType == EdgeTypeDependsOn && sourceID == targetID {
+		return errors.New("invalid edge: a node can't depend on itself")
 	}
 
 	// Get source and target node types
@@ -112,6 +124,9 @@ func (s *Service) CreateEdge(ctx context.Context, ns string, sourceID, targetID 
 		)
 	}
 
+	if edgeType == EdgeTypeDependsOn {
+		return s.repo.CreateDependency(ctx, ns, sourceID, targetID)
+	}
 	return s.repo.CreateEdge(ctx, ns, sourceID, targetID, string(edgeType))
 }
 
@@ -140,6 +155,22 @@ func (s *Service) GetParents(ctx context.Context, ns string, id uuid.UUID) ([]Ge
 		return nil, err
 	}
 	return s.repo.GetParents(ctx, ns, id)
+}
+
+// GetDependencies returns the nodes that a node depends on.
+func (s *Service) GetDependencies(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error) {
+	if _, err := s.repo.GetNode(ctx, ns, id); err != nil {
+		return nil, err
+	}
+	return s.repo.GetDependencies(ctx, ns, id)
+}
+
+// GetDependents returns the nodes that depend on a node.
+func (s *Service) GetDependents(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error) {
+	if _, err := s.repo.GetNode(ctx, ns, id); err != nil {
+		return nil, err
+	}
+	return s.repo.GetDependents(ctx, ns, id)
 }
 
 // GetSubtree returns the full descendant tree of a node.

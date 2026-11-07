@@ -13,18 +13,21 @@ const testNS = "ns-test"
 
 // mockRepo implements the Repo interface for testing.
 type mockRepo struct {
-	createNodeFn  func(ctx context.Context, label string, props map[string]any) (GenericNode, error)
-	getNodeFn     func(ctx context.Context, id uuid.UUID) (GenericNode, error)
-	listNodesFn   func(ctx context.Context, nodeType *string, status *string, search *string, offset, limit int) ([]GenericNode, int, error)
-	updateNodeFn  func(ctx context.Context, id uuid.UUID, props map[string]any) (GenericNode, GenericNode, error)
-	deleteNodeFn  func(ctx context.Context, id uuid.UUID) (GenericNode, error)
-	createEdgeFn  func(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error
-	deleteEdgeFn  func(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error
-	getChildrenFn func(ctx context.Context, id uuid.UUID) ([]GenericNode, error)
-	getParentsFn  func(ctx context.Context, id uuid.UUID) ([]GenericNode, error)
-	getSubtreeFn  func(ctx context.Context, id uuid.UUID) (*SubtreeNode, error)
-	getLineageFn  func(ctx context.Context, id uuid.UUID) ([]GenericNode, error)
-	getNodeTypeFn func(ctx context.Context, id uuid.UUID) (NodeType, error)
+	createNodeFn       func(ctx context.Context, label string, props map[string]any) (GenericNode, error)
+	getNodeFn          func(ctx context.Context, id uuid.UUID) (GenericNode, error)
+	listNodesFn        func(ctx context.Context, nodeType *string, status *string, search *string, offset, limit int) ([]GenericNode, int, error)
+	updateNodeFn       func(ctx context.Context, id uuid.UUID, props map[string]any) (GenericNode, GenericNode, error)
+	deleteNodeFn       func(ctx context.Context, id uuid.UUID) (GenericNode, error)
+	createEdgeFn       func(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error
+	deleteEdgeFn       func(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error
+	getChildrenFn      func(ctx context.Context, id uuid.UUID) ([]GenericNode, error)
+	getParentsFn       func(ctx context.Context, id uuid.UUID) ([]GenericNode, error)
+	getSubtreeFn       func(ctx context.Context, id uuid.UUID) (*SubtreeNode, error)
+	getLineageFn       func(ctx context.Context, id uuid.UUID) ([]GenericNode, error)
+	getNodeTypeFn      func(ctx context.Context, id uuid.UUID) (NodeType, error)
+	createDependencyFn func(ctx context.Context, sourceID, targetID uuid.UUID) error
+	getDependenciesFn  func(ctx context.Context, id uuid.UUID) ([]GenericNode, error)
+	getDependentsFn    func(ctx context.Context, id uuid.UUID) ([]GenericNode, error)
 
 	namespaces []string // namespace passed to each call, in order
 }
@@ -123,6 +126,30 @@ func (m *mockRepo) GetNodeType(ctx context.Context, ns string, id uuid.UUID) (No
 		return m.getNodeTypeFn(ctx, id)
 	}
 	return "", nil
+}
+
+func (m *mockRepo) CreateDependency(ctx context.Context, ns string, sourceID, targetID uuid.UUID) error {
+	m.namespaces = append(m.namespaces, ns)
+	if m.createDependencyFn != nil {
+		return m.createDependencyFn(ctx, sourceID, targetID)
+	}
+	return nil
+}
+
+func (m *mockRepo) GetDependencies(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error) {
+	m.namespaces = append(m.namespaces, ns)
+	if m.getDependenciesFn != nil {
+		return m.getDependenciesFn(ctx, id)
+	}
+	return []GenericNode{}, nil
+}
+
+func (m *mockRepo) GetDependents(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error) {
+	m.namespaces = append(m.namespaces, ns)
+	if m.getDependentsFn != nil {
+		return m.getDependentsFn(ctx, id)
+	}
+	return []GenericNode{}, nil
 }
 
 // ── CreateNode Tests ─────────────────────────────────────────────────────────
@@ -710,10 +737,15 @@ func TestService_PassesNamespaceToEveryRepoCall(t *testing.T) {
 	_, _ = svc.GetParents(ctx, testNS, id)
 	_, _ = svc.GetSubtree(ctx, testNS, id)
 	_, _ = svc.GetLineage(ctx, testNS, id)
+	calls = 10 // both type lookups below return vision
+	_ = svc.CreateEdge(ctx, testNS, id, uuid.New(), EdgeTypeDependsOn)
+	_, _ = svc.GetDependencies(ctx, testNS, id)
+	_, _ = svc.GetDependents(ctx, testNS, id)
 
-	// CreateEdge makes 3 calls; GetChildren, GetParents and GetLineage make 2.
-	if len(repo.namespaces) != 16 {
-		t.Errorf("repo calls = %d, want 16", len(repo.namespaces))
+	// Each CreateEdge makes 3 calls; GetChildren, GetParents, GetLineage,
+	// GetDependencies and GetDependents make 2.
+	if len(repo.namespaces) != 23 {
+		t.Errorf("repo calls = %d, want 23", len(repo.namespaces))
 	}
 	for i, ns := range repo.namespaces {
 		if ns != testNS {
@@ -731,5 +763,120 @@ func TestService_DeleteEdge_UnknownEdgeType(t *testing.T) {
 	}
 	if len(repo.namespaces) != 0 {
 		t.Errorf("repo was called %d times, want 0", len(repo.namespaces))
+	}
+}
+
+// ── Dependency Tests ─────────────────────────────────────────────────────────
+
+func TestService_CreateEdge_DependsOn(t *testing.T) {
+	sourceID, targetID := uuid.New(), uuid.New()
+	var gotSource, gotTarget uuid.UUID
+	repo := &mockRepo{
+		getNodeTypeFn: func(ctx context.Context, id uuid.UUID) (NodeType, error) {
+			return NodeTypeRequirement, nil
+		},
+		createEdgeFn: func(ctx context.Context, sourceID, targetID uuid.UUID, edgeType string) error {
+			t.Error("DEPENDS_ON went through CreateEdge, want CreateDependency")
+			return nil
+		},
+		createDependencyFn: func(ctx context.Context, s, tg uuid.UUID) error {
+			gotSource, gotTarget = s, tg
+			return nil
+		},
+	}
+	svc := NewService(repo)
+	if err := svc.CreateEdge(context.Background(), testNS, sourceID, targetID, EdgeTypeDependsOn); err != nil {
+		t.Fatalf("CreateEdge: %v", err)
+	}
+	if gotSource != sourceID || gotTarget != targetID {
+		t.Errorf("CreateDependency(%s, %s), want (%s, %s)", gotSource, gotTarget, sourceID, targetID)
+	}
+}
+
+func TestService_CreateEdge_DependsOnDifferentTypes(t *testing.T) {
+	calls := 0
+	repo := &mockRepo{
+		getNodeTypeFn: func(ctx context.Context, id uuid.UUID) (NodeType, error) {
+			calls++
+			if calls == 1 {
+				return NodeTypeRequirement, nil
+			}
+			return NodeTypeTask, nil
+		},
+		createDependencyFn: func(ctx context.Context, s, tg uuid.UUID) error {
+			t.Error("CreateDependency called for nodes of different types")
+			return nil
+		},
+	}
+	svc := NewService(repo)
+	err := svc.CreateEdge(context.Background(), testNS, uuid.New(), uuid.New(), EdgeTypeDependsOn)
+	if err == nil || !strings.Contains(err.Error(), "expected target type requirement") {
+		t.Errorf("err = %v, want a type mismatch error", err)
+	}
+}
+
+func TestService_CreateEdge_DependsOnSelf(t *testing.T) {
+	repo := &mockRepo{}
+	svc := NewService(repo)
+	id := uuid.New()
+	err := svc.CreateEdge(context.Background(), testNS, id, id, EdgeTypeDependsOn)
+	if err == nil || !strings.Contains(err.Error(), "can't depend on itself") {
+		t.Errorf("err = %v, want a self-dependency error", err)
+	}
+	if len(repo.namespaces) != 0 {
+		t.Errorf("repo was called %d times, want 0", len(repo.namespaces))
+	}
+}
+
+func TestService_CreateEdge_DependsOnPropagatesRepoErrors(t *testing.T) {
+	for _, want := range []error{ErrDependencyCycle, ErrNotFound} {
+		repo := &mockRepo{
+			getNodeTypeFn: func(ctx context.Context, id uuid.UUID) (NodeType, error) {
+				return NodeTypeTask, nil
+			},
+			createDependencyFn: func(ctx context.Context, s, tg uuid.UUID) error { return want },
+		}
+		err := NewService(repo).CreateEdge(context.Background(), testNS, uuid.New(), uuid.New(), EdgeTypeDependsOn)
+		if !errors.Is(err, want) {
+			t.Errorf("err = %v, want %v", err, want)
+		}
+	}
+}
+
+func TestService_GetDependenciesAndDependents(t *testing.T) {
+	dep := GenericNode{ID: uuid.New(), Type: NodeTypeTask}
+	repo := &mockRepo{
+		getDependenciesFn: func(ctx context.Context, id uuid.UUID) ([]GenericNode, error) { return []GenericNode{dep}, nil },
+		getDependentsFn:   func(ctx context.Context, id uuid.UUID) ([]GenericNode, error) { return []GenericNode{dep, dep}, nil },
+	}
+	svc := NewService(repo)
+	deps, err := svc.GetDependencies(context.Background(), testNS, uuid.New())
+	if err != nil || len(deps) != 1 {
+		t.Errorf("GetDependencies = %v, %v; want 1 node", deps, err)
+	}
+	dependents, err := svc.GetDependents(context.Background(), testNS, uuid.New())
+	if err != nil || len(dependents) != 2 {
+		t.Errorf("GetDependents = %v, %v; want 2 nodes", dependents, err)
+	}
+}
+
+func TestService_GetDependenciesAndDependents_NodeNotFound(t *testing.T) {
+	repo := &mockRepo{
+		getNodeFn: func(ctx context.Context, id uuid.UUID) (GenericNode, error) { return GenericNode{}, ErrNotFound },
+		getDependenciesFn: func(ctx context.Context, id uuid.UUID) ([]GenericNode, error) {
+			t.Error("GetDependencies queried a missing node")
+			return nil, nil
+		},
+		getDependentsFn: func(ctx context.Context, id uuid.UUID) ([]GenericNode, error) {
+			t.Error("GetDependents queried a missing node")
+			return nil, nil
+		},
+	}
+	svc := NewService(repo)
+	if _, err := svc.GetDependencies(context.Background(), testNS, uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetDependencies err = %v, want ErrNotFound", err)
+	}
+	if _, err := svc.GetDependents(context.Background(), testNS, uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetDependents err = %v, want ErrNotFound", err)
 	}
 }

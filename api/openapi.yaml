@@ -143,6 +143,15 @@ paths:
     post:
       operationId: createEdge
       summary: Create an edge between two nodes
+      description: >
+        Both nodes must exist in the request's namespace. `BREAKS_DOWN_TO`
+        and `IMPLEMENTED_BY` follow the breakdown hierarchy
+        (vision → goal → feature → requirement → task → gitref).
+        `DEPENDS_ON` means the source depends on the target; both nodes must
+        have the same type, a node can't depend on itself, and an edge that
+        would close a cycle of `DEPENDS_ON` edges is rejected with 409.
+        Creating a `DEPENDS_ON` edge that already exists is idempotent and
+        returns 201 without creating a second edge.
       requestBody:
         required: true
         content:
@@ -160,6 +169,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: The edge would create a cycle of DEPENDS_ON edges
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
     delete:
       operationId: deleteEdge
@@ -186,6 +201,7 @@ paths:
     get:
       operationId: getChildren
       summary: Get direct children of a node
+      description: Follows BREAKS_DOWN_TO and IMPLEMENTED_BY edges only; DEPENDS_ON edges are ignored.
       responses:
         "200":
           description: List of child nodes
@@ -205,6 +221,7 @@ paths:
     get:
       operationId: getParents
       summary: Get direct parents of a node
+      description: Follows BREAKS_DOWN_TO and IMPLEMENTED_BY edges only; DEPENDS_ON edges are ignored.
       responses:
         "200":
           description: List of parent nodes
@@ -224,6 +241,7 @@ paths:
     get:
       operationId: getSubtree
       summary: Get the full descendant tree of a node (recursive)
+      description: Follows BREAKS_DOWN_TO and IMPLEMENTED_BY edges only; DEPENDS_ON edges are ignored.
       responses:
         "200":
           description: Tree of descendant nodes
@@ -243,9 +261,51 @@ paths:
     get:
       operationId: getLineage
       summary: Trace ancestors up to the root Vision
+      description: Follows BREAKS_DOWN_TO and IMPLEMENTED_BY edges only; DEPENDS_ON edges are ignored.
       responses:
         "200":
           description: Ordered list of ancestor nodes from root to this node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeArray"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Dependencies ────────────────────────────────────────────
+  /namespaces/{namespace}/nodes/{id}/dependencies:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/NodeId"
+    get:
+      operationId: getDependencies
+      summary: Get the nodes this node depends on
+      description: Targets of the node's outgoing DEPENDS_ON edges.
+      responses:
+        "200":
+          description: List of nodes this node depends on
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeArray"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /namespaces/{namespace}/nodes/{id}/dependents:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/NodeId"
+    get:
+      operationId: getDependents
+      summary: Get the nodes that depend on this node
+      description: Sources of the node's incoming DEPENDS_ON edges.
+      responses:
+        "200":
+          description: List of nodes that depend on this node
           content:
             application/json:
               schema:
@@ -376,7 +436,7 @@ components:
 
     EdgeType:
       type: string
-      enum: [BREAKS_DOWN_TO, IMPLEMENTED_BY]
+      enum: [BREAKS_DOWN_TO, IMPLEMENTED_BY, DEPENDS_ON]
 
     GitRefKind:
       type: string

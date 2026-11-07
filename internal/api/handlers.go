@@ -249,6 +249,10 @@ func (h *Handlers) CreateEdge(w http.ResponseWriter, r *http.Request, namespace 
 			writeError(w, http.StatusNotFound, "source or target node not found")
 			return
 		}
+		if errors.Is(err, graph.ErrDependencyCycle) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -318,6 +322,34 @@ func (h *Handlers) GetParents(w http.ResponseWriter, r *http.Request, namespace 
 	}
 
 	writeJSON(w, http.StatusOK, NodeArray{Nodes: genericNodesToAPI(parents)})
+}
+
+func (h *Handlers) GetDependencies(w http.ResponseWriter, r *http.Request, namespace Namespace, id NodeId) {
+	nodes, err := h.graphSvc.GetDependencies(r.Context(), namespace, uuid.UUID(id))
+	if err != nil {
+		if errors.Is(err, graph.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, NodeArray{Nodes: genericNodesToAPI(nodes)})
+}
+
+func (h *Handlers) GetDependents(w http.ResponseWriter, r *http.Request, namespace Namespace, id NodeId) {
+	nodes, err := h.graphSvc.GetDependents(r.Context(), namespace, uuid.UUID(id))
+	if err != nil {
+		if errors.Is(err, graph.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, NodeArray{Nodes: genericNodesToAPI(nodes)})
 }
 
 func (h *Handlers) GetSubtree(w http.ResponseWriter, r *http.Request, namespace Namespace, id NodeId) {

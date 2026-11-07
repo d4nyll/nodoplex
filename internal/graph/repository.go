@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -240,6 +241,113 @@ func (r *Repository) DeleteEdge(ctx context.Context, ns string, sourceID, target
 		return ErrNotFound
 	}
 	return nil
+}
+
+// CreateDependency creates a DEPENDS_ON edge from source to target, both in
+// namespace ns. It returns nil without creating anything if the edge already
+// exists, ErrNotFound if either node is missing, and ErrDependencyCycle if
+// target already depends on source, directly or through other nodes.
+//
+// The cycle check is safe under concurrent requests. The check and the create
+// run in one transaction that first writes to the namespace's
+// (:DependencyLock) node. Neo4j holds a write lock on that node until the
+// transaction ends, so dependency creations in one namespace run one at a
+// time, and each cycle check reads every DEPENDS_ON edge committed before it.
+// Without the lock, two transactions could each add half of a cycle (A->B
+// and B->A), each check a graph that lacks the other's uncommitted edge, and
+// both commit. Edges never connect two namespaces, so a cycle can only form
+// inside one namespace and one lock per namespace is enough.
+//
+// ponytail: one lock per namespace serializes all dependency creation in it;
+// key the lock on namespace and node type if that becomes a bottleneck.
+func (r *Repository) CreateDependency(ctx context.Context, ns string, sourceID, targetID uuid.UUID) error {
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer session.Close(ctx)
+
+	params := map[string]any{"ns": ns, "sourceId": sourceID.String(), "targetId": targetID.String()}
+	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		if _, err := tx.Run(ctx,
+			"MERGE (l:DependencyLock {namespace: $ns}) SET l.lockedAt = timestamp()",
+			params,
+		); err != nil {
+			return nil, fmt.Errorf("lock: %w", err)
+		}
+
+		result, err := tx.Run(ctx,
+			`MATCH (a:Node {id: $sourceId, namespace: $ns}), (b:Node {id: $targetId, namespace: $ns})
+			 OPTIONAL MATCH p = shortestPath((b)-[:DEPENDS_ON*]->(a))
+			 RETURN EXISTS { (a)-[:DEPENDS_ON]->(b) } AS exists, p IS NOT NULL AS cycle`,
+			params,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("check: %w", err)
+		}
+		if !result.Next(ctx) {
+			return nil, ErrNotFound
+		}
+		exists, _ := result.Record().Get("exists")
+		cycle, _ := result.Record().Get("cycle")
+		if exists.(bool) {
+			return nil, nil
+		}
+		if cycle.(bool) {
+			return nil, ErrDependencyCycle
+		}
+
+		result, err = tx.Run(ctx,
+			`MATCH (a:Node {id: $sourceId, namespace: $ns}), (b:Node {id: $targetId, namespace: $ns})
+			 CREATE (a)-[:DEPENDS_ON]->(b)`,
+			params,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create: %w", err)
+		}
+		summary, err := result.Consume(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("create: %w", err)
+		}
+		// A node deleted since the check (deletes don't take the lock).
+		if summary.Counters().RelationshipsCreated() == 0 {
+			return nil, ErrNotFound
+		}
+		return nil, nil
+	})
+	if err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrDependencyCycle) {
+		return fmt.Errorf("create dependency: %w", err)
+	}
+	return err
+}
+
+// GetDependencies returns the nodes that a node depends on (targets of its
+// outgoing DEPENDS_ON edges).
+func (r *Repository) GetDependencies(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error) {
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
+	defer session.Close(ctx)
+
+	result, err := session.Run(ctx,
+		"MATCH (n:Node {id: $id, namespace: $ns})-[:DEPENDS_ON]->(d:Node {namespace: $ns}) RETURN d AS n, labels(d) AS labels",
+		map[string]any{"id": id.String(), "ns": ns},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get dependencies: %w", err)
+	}
+	return collectNodes(ctx, result)
+}
+
+// GetDependents returns the nodes that depend on a node (sources of its
+// incoming DEPENDS_ON edges).
+func (r *Repository) GetDependents(ctx context.Context, ns string, id uuid.UUID) ([]GenericNode, error) {
+	session := r.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
+	defer session.Close(ctx)
+
+	result, err := session.Run(ctx,
+		"MATCH (d:Node {namespace: $ns})-[:DEPENDS_ON]->(n:Node {id: $id, namespace: $ns}) RETURN d AS n, labels(d) AS labels",
+		map[string]any{"id": id.String(), "ns": ns},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get dependents: %w", err)
+	}
+	return collectNodes(ctx, result)
 }
 
 // GetChildren returns the direct children of a node (via BREAKS_DOWN_TO or IMPLEMENTED_BY).

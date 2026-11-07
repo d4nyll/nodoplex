@@ -22,8 +22,10 @@ func NewNeo4jDriver(ctx context.Context, uri, user, password string) (neo4j.Driv
 // nodeLabels lists all node labels that need uniqueness constraints.
 var nodeLabels = []string{"Vision", "Goal", "Feature", "Requirement", "Task", "GitRef"}
 
-// RunMigrations creates uniqueness constraints for all node types, and the
-// constraint and index on the :Node label that namespace-scoped lookups use.
+// RunMigrations creates uniqueness constraints for all node types, the
+// constraint and index on the :Node label that namespace-scoped lookups use,
+// and the constraint on the per-namespace lock nodes that
+// graph.Repository.CreateDependency takes.
 func RunNeo4jMigrations(ctx context.Context, driver neo4j.DriverWithContext) error {
 	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer session.Close(ctx)
@@ -40,6 +42,8 @@ func RunNeo4jMigrations(ctx context.Context, driver neo4j.DriverWithContext) err
 		"CREATE CONSTRAINT node_id_unique IF NOT EXISTS FOR (n:Node) REQUIRE n.id IS UNIQUE",
 		// Listing a namespace seeks this index.
 		"CREATE INDEX node_namespace IF NOT EXISTS FOR (n:Node) ON (n.namespace)",
+		// Lets concurrent MERGEs of a namespace's lock node agree on one node.
+		"CREATE CONSTRAINT dependency_lock_namespace_unique IF NOT EXISTS FOR (l:DependencyLock) REQUIRE l.namespace IS UNIQUE",
 	)
 	for _, q := range queries {
 		if _, err := session.Run(ctx, q, nil); err != nil {
