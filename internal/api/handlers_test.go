@@ -1042,7 +1042,7 @@ func TestE2E_InvalidNamespace(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	for _, ns := range []string{strings.Repeat("a", graph.MaxNamespaceLength+1), "org%FF", "%00", "%2E%2E"} {
+	for _, ns := range []string{strings.Repeat("a", graph.MaxNamespaceLength+1), "org%FF", "%00", "%2E%2E", "org%2F42", "a@b", "a%20b", "gr%C3%B6%C3%9Fe", ".a"} {
 		resp, err := http.Get(ts.URL + "/namespaces/" + ns + "/nodes")
 		if err != nil {
 			t.Fatalf("request error: %v", err)
@@ -1066,8 +1066,7 @@ func TestE2E_NamespaceFromPathReachesRepo(t *testing.T) {
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	// The namespace is opaque: an escaped slash is part of the value.
-	resp, err := http.Get(ts.URL + "/namespaces/org%2F42/nodes/" + uuid.New().String())
+	resp, err := http.Get(ts.URL + "/namespaces/Org-1_team:prod.eu/nodes/" + uuid.New().String())
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
@@ -1075,8 +1074,8 @@ func TestE2E_NamespaceFromPathReachesRepo(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
-	if len(repo.namespaces) != 1 || repo.namespaces[0] != "org/42" {
-		t.Errorf("repo namespaces = %q, want [\"org/42\"]", repo.namespaces)
+	if len(repo.namespaces) != 1 || repo.namespaces[0] != "Org-1_team:prod.eu" {
+		t.Errorf("repo namespaces = %q, want [\"Org-1_team:prod.eu\"]", repo.namespaces)
 	}
 }
 

@@ -394,13 +394,14 @@ components:
       in: path
       required: true
       description: >
-        Opaque identifier of the namespace the request operates in: 1 to 256
-        characters of valid UTF-8, with no control characters, and not `.`
-        or `..`. Nodoplex attaches no meaning to the value.
+        Identifier of the namespace the request operates in: 1 to 256 ASCII
+        letters, digits, hyphens, underscores, colons and periods, with no
+        period at the start or end. Nodoplex attaches no meaning to the value.
       schema:
         type: string
         minLength: 1
         maxLength: 256
+        pattern: '^[A-Za-z0-9_:-]([A-Za-z0-9_:.-]*[A-Za-z0-9_:-])?$'
 
     NodeId:
       name: id

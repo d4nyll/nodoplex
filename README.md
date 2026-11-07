@@ -163,7 +163,7 @@ The full OpenAPI spec is at [`api/openapi.yaml`](api/openapi.yaml). You can view
 
 ### Namespaces
 
-Every node belongs to exactly one namespace. A namespace is an opaque string that the caller picks, and Nodoplex attaches no meaning to it. It can be any 1 to 256 UTF-8 characters, except that it can't contain control characters and can't be `.` or `..`. A node gets the namespace of the request that creates it, and the namespace never changes.
+Every node belongs to exactly one namespace. A namespace is an opaque string that the caller picks, and Nodoplex attaches no meaning to it. It can be 1 to 256 characters long and may contain ASCII letters, digits, hyphens (`-`), underscores (`_`), colons (`:`) and periods (`.`), but can't start or end with a period. A node gets the namespace of the request that creates it, and the namespace never changes.
 
 A request carries its namespace as the first path segment: every API path starts with `/namespaces/{namespace}/`, for example `GET /namespaces/acme/nodes/{id}`. Only `/health` sits outside a namespace. Nodoplex uses a path prefix rather than a header for three reasons:
 
@@ -176,7 +176,7 @@ Every operation sees only its own namespace:
 - Reads, lists, traversals, edge creation and deletion return 404 for a node in another namespace, with the same body as for a node that doesn't exist.
 - An edge can only connect two nodes in the request's namespace, so no edge crosses namespaces.
 - `/changes` and `/subscribe` only return changes made in the request's namespace. Change ids come from one sequence shared by all namespaces, so the ids a namespace sees have gaps where other namespaces made changes.
-- A request to an unprefixed path such as `/nodes`, or with an empty namespace such as `/namespaces//nodes`, gets a 400. So does a namespace that is too long, isn't valid UTF-8, contains a control character, or is `.` or `..`.
+- A request to an unprefixed path such as `/nodes`, or with an empty namespace such as `/namespaces//nodes`, gets a 400. So does a namespace that is too long, contains any other character (for example `/`, `@`, a space or a non-ASCII letter, encoded or not), or starts or ends with a period.
 
 Nodes carry a `:Node` label and a `namespace` property in Neo4j. Lookups by id seek the unique constraint on `(:Node).id` and lists seek the index on `(:Node).namespace`; `NODOPLEX_INTEGRATION=1 go test ./internal/graph -run Integration` checks the query plans.
 
