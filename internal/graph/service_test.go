@@ -266,15 +266,15 @@ func TestService_CreateEdge_ValidBreaksDownTo(t *testing.T) {
 
 func TestService_CreateEdge_ValidImplementedBy(t *testing.T) {
 	taskID := uuid.New()
-	gitRefID := uuid.New()
+	outputID := uuid.New()
 
 	repo := &mockRepo{
 		getNodeTypeFn: func(ctx context.Context, id uuid.UUID) (NodeType, error) {
 			if id == taskID {
 				return NodeTypeTask, nil
 			}
-			if id == gitRefID {
-				return NodeTypeGitRef, nil
+			if id == outputID {
+				return NodeTypeOutput, nil
 			}
 			return "", ErrNotFound
 		},
@@ -284,7 +284,7 @@ func TestService_CreateEdge_ValidImplementedBy(t *testing.T) {
 	}
 
 	svc := NewService(repo)
-	err := svc.CreateEdge(context.Background(), testNS, taskID, gitRefID, EdgeTypeImplementedBy)
+	err := svc.CreateEdge(context.Background(), testNS, taskID, outputID, EdgeTypeImplementedBy)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -302,21 +302,21 @@ func TestService_CreateEdge_UnknownEdgeType(t *testing.T) {
 }
 
 func TestService_CreateEdge_InvalidSourceType(t *testing.T) {
-	// GitRef -> Goal via BREAKS_DOWN_TO is not allowed
-	gitRefID := uuid.New()
+	// Output -> Goal via BREAKS_DOWN_TO is not allowed
+	outputID := uuid.New()
 	goalID := uuid.New()
 
 	repo := &mockRepo{
 		getNodeTypeFn: func(ctx context.Context, id uuid.UUID) (NodeType, error) {
-			if id == gitRefID {
-				return NodeTypeGitRef, nil
+			if id == outputID {
+				return NodeTypeOutput, nil
 			}
 			return NodeTypeGoal, nil
 		},
 	}
 
 	svc := NewService(repo)
-	err := svc.CreateEdge(context.Background(), testNS, gitRefID, goalID, EdgeTypeBreaksDownTo)
+	err := svc.CreateEdge(context.Background(), testNS, outputID, goalID, EdgeTypeBreaksDownTo)
 	if err == nil {
 		t.Fatal("expected error for invalid source type")
 	}
@@ -377,7 +377,7 @@ func TestService_CreateEdge_AllValidPairs(t *testing.T) {
 		{EdgeTypeBreaksDownTo, NodeTypeGoal, NodeTypeFeature},
 		{EdgeTypeBreaksDownTo, NodeTypeFeature, NodeTypeRequirement},
 		{EdgeTypeBreaksDownTo, NodeTypeRequirement, NodeTypeTask},
-		{EdgeTypeImplementedBy, NodeTypeTask, NodeTypeGitRef},
+		{EdgeTypeImplementedBy, NodeTypeTask, NodeTypeOutput},
 	}
 
 	for _, tt := range validPairs {
@@ -416,9 +416,9 @@ func TestService_CreateEdge_InvalidPairs(t *testing.T) {
 		{"Vision->Feature via BDT", EdgeTypeBreaksDownTo, NodeTypeVision, NodeTypeFeature},
 		{"Goal->Task via BDT", EdgeTypeBreaksDownTo, NodeTypeGoal, NodeTypeTask},
 		{"Task->Goal via BDT", EdgeTypeBreaksDownTo, NodeTypeTask, NodeTypeGoal},
-		{"Vision->GitRef via IB", EdgeTypeImplementedBy, NodeTypeVision, NodeTypeGitRef},
-		{"Goal->GitRef via IB", EdgeTypeImplementedBy, NodeTypeGoal, NodeTypeGitRef},
-		{"GitRef->Task via IB", EdgeTypeImplementedBy, NodeTypeGitRef, NodeTypeTask},
+		{"Vision->Output via IB", EdgeTypeImplementedBy, NodeTypeVision, NodeTypeOutput},
+		{"Goal->Output via IB", EdgeTypeImplementedBy, NodeTypeGoal, NodeTypeOutput},
+		{"Output->Task via IB", EdgeTypeImplementedBy, NodeTypeOutput, NodeTypeTask},
 	}
 
 	for _, tt := range invalidPairs {

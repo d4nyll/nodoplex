@@ -551,3 +551,125 @@ func TestIntegration_DependenciesNamespaceIsolation(t *testing.T) {
 		t.Errorf("found %d DEPENDS_ON edges between namespaces, want 0", c)
 	}
 }
+
+// TestIntegration_Outputs creates an Output under a task and checks that its
+// payload comes back unchanged from every read, that only a task can be its
+// parent, and that its changes reach /changes and /subscribe.
+func TestIntegration_Outputs(t *testing.T) {
+	e := newIntegrationEnv(t)
+	ns := newNamespace()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, e.ts.URL+"/namespaces/"+ns+"/subscribe?type=output", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer resp.Body.Close()
+	events := make(chan string, 100)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			if l := sc.Text(); strings.HasPrefix(l, "data: ") {
+				events <- strings.TrimPrefix(l, "data: ")
+			}
+		}
+	}()
+
+	task := e.createNode(t, ns, map[string]any{"type": "task", "title": "T", "status": "backlog"})
+	vision := e.createNode(t, ns, map[string]any{"type": "vision", "title": "V"})
+	payload := map[string]any{
+		"repository": "https://github.com/d4nyll/nodoplex.git",
+		"baseRef":    "main",
+		"currentRef": "feat/oidc",
+		"extra":      map[string]any{"n": 1.5, "list": []any{"a", true, nil}},
+	}
+	output := e.createNode(t, ns, map[string]any{
+		"type": "output", "outputType": "git", "description": "OIDC branch", "payload": payload,
+	})
+	e.mustCreateEdge(t, ns, task, output, "IMPLEMENTED_BY")
+
+	want := map[string]any{
+		"id": output, "type": "output", "outputType": "git", "description": "OIDC branch", "payload": payload,
+	}
+	sameJSON := func(t *testing.T, what string, got any) {
+		t.Helper()
+		g, _ := json.Marshal(got)
+		w, _ := json.Marshal(want)
+		if !bytes.Equal(g, w) {
+			t.Errorf("%s = %s, want %s", what, g, w)
+		}
+	}
+
+	_, b := e.call(t, http.MethodGet, "/namespaces/"+ns+"/nodes/"+output, nil)
+	var withRels struct {
+		Node    map[string]any
+		Parents []map[string]any
+	}
+	json.Unmarshal(b, &withRels)
+	sameJSON(t, "GET output", withRels.Node)
+	if len(withRels.Parents) != 1 || withRels.Parents[0]["id"] != task {
+		t.Errorf("parents of output = %v, want the task", withRels.Parents)
+	}
+	var children struct{ Nodes []map[string]any }
+	_, b = e.call(t, http.MethodGet, "/namespaces/"+ns+"/nodes/"+task+"/children", nil)
+	json.Unmarshal(b, &children)
+	if len(children.Nodes) != 1 {
+		t.Fatalf("children of task = %s, want the output", b)
+	}
+	sameJSON(t, "child of task", children.Nodes[0])
+	if got := e.ids(t, ns, "/nodes?type=output"); !sameIDs(got, []string{output}) {
+		t.Errorf("list outputs = %v, want %s", got, output)
+	}
+
+	for _, c := range []struct{ name, source, target, edgeType string }{
+		{"output to task", output, task, "IMPLEMENTED_BY"},
+		{"vision to output", vision, output, "IMPLEMENTED_BY"},
+		{"task to output via BREAKS_DOWN_TO", task, output, "BREAKS_DOWN_TO"},
+	} {
+		if status, b := e.createEdge(t, ns, c.source, c.target, c.edgeType); status != http.StatusBadRequest {
+			t.Errorf("%s: %d %s, want 400", c.name, status, b)
+		}
+	}
+
+	// PATCH replaces the whole payload.
+	status, b := e.call(t, http.MethodPatch, "/namespaces/"+ns+"/nodes/"+output,
+		map[string]any{"payload": map[string]any{"currentRef": "abc123"}})
+	if status != http.StatusOK {
+		t.Fatalf("patch payload: %d %s", status, b)
+	}
+	want["payload"] = map[string]any{"currentRef": "abc123"}
+	var patched map[string]any
+	json.Unmarshal(b, &patched)
+	sameJSON(t, "PATCH response", patched)
+
+	_, b = e.call(t, http.MethodGet, "/namespaces/"+ns+"/changes?type=output", nil)
+	var list struct {
+		Changes []struct {
+			Action   string
+			NodeType string
+			Node     map[string]any
+			Previous map[string]any
+		}
+	}
+	json.Unmarshal(b, &list)
+	if len(list.Changes) != 2 || list.Changes[0].Action != "created" || list.Changes[1].Action != "updated" {
+		t.Fatalf("changes = %s, want created and updated", b)
+	}
+	sameJSON(t, "changelog node after update", list.Changes[1].Node)
+	if list.Changes[1].Previous["payload"].(map[string]any)["baseRef"] != "main" {
+		t.Errorf("changelog previous = %v, want the original payload", list.Changes[1].Previous)
+	}
+
+	for _, action := range []string{"created", "updated"} {
+		select {
+		case ev := <-events:
+			if !strings.Contains(ev, `"action":"`+action+`"`) || !strings.Contains(ev, `"outputType":"git"`) {
+				t.Errorf("SSE event = %s, want %s output", ev, action)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no SSE event for the %s output", action)
+		}
+	}
+}

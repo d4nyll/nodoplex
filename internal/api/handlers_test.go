@@ -261,33 +261,113 @@ func TestE2E_CreateNode_Task(t *testing.T) {
 	}
 }
 
-func TestE2E_CreateNode_GitRef(t *testing.T) {
+func TestE2E_CreateNode_Output(t *testing.T) {
 	id := uuid.New()
+	var gotLabel string
+	var gotProps map[string]any
 	repo := &mockGraphRepo{
 		createNodeFn: func(ctx context.Context, label string, props map[string]any) (graph.GenericNode, error) {
-			return graph.GenericNode{
-				ID:      id,
-				Type:    graph.NodeTypeGitRef,
-				Repo:    strPtr("my-repo"),
-				RefType: strPtr("commit"),
-				Ref:     strPtr("abc123"),
-			}, nil
+			gotLabel, gotProps = label, props
+			return graph.NodeFromProps(map[string]any{
+				"id":          id.String(),
+				"outputType":  props["outputType"],
+				"description": props["description"],
+				"payload":     props["payload"],
+			}, label), nil
 		},
 	}
 
 	ts := setupTestServer(repo)
 	defer ts.Close()
 
-	body := `{"type":"gitref","repo":"my-repo","refType":"commit","ref":"abc123"}`
+	body := `{"type":"output","outputType":"git","description":"OIDC branch","payload":{"repository":"https://github.com/d4nyll/nodoplex.git","baseRef":"main","currentRef":"feat/oidc"}}`
 	resp, err := http.Post(ts.URL+"/namespaces/"+testNS+"/nodes", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
 	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusCreated {
-		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusCreated, b)
+	}
+	if gotLabel != "Output" {
+		t.Errorf("label = %q, want Output", gotLabel)
+	}
+	if p := gotProps["payload"]; p != `{"baseRef":"main","currentRef":"feat/oidc","repository":"https://github.com/d4nyll/nodoplex.git"}` {
+		t.Errorf("stored payload = %v", p)
+	}
+	want := `{"description":"OIDC branch","id":"` + id.String() + `","outputType":"git","payload":{"baseRef":"main","currentRef":"feat/oidc","repository":"https://github.com/d4nyll/nodoplex.git"},"type":"output"}`
+	if strings.TrimSpace(string(b)) != want {
+		t.Errorf("body = %s, want %s", b, want)
+	}
+}
+
+func TestE2E_CreateNode_OutputInvalid(t *testing.T) {
+	repo := &mockGraphRepo{}
+	ts := setupTestServer(repo)
+	defer ts.Close()
+
+	for _, body := range []string{
+		`{"type":"output","description":"no outputType"}`,
+		`{"type":"output","outputType":""}`,
+		`{"type":"output","outputType":"git","payload":[1,2]}`,
+		`{"type":"gitref","repo":"my-repo","refType":"commit","ref":"abc123"}`,
+	} {
+		resp, err := http.Post(ts.URL+"/namespaces/"+testNS+"/nodes", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("request error: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", body, resp.StatusCode)
+		}
+	}
+	if len(repo.namespaces) != 0 {
+		t.Errorf("repo was called %d times, want 0", len(repo.namespaces))
+	}
+}
+
+func TestE2E_UpdateNode_OutputPayload(t *testing.T) {
+	id := uuid.New()
+	var gotProps map[string]any
+	repo := &mockGraphRepo{
+		updateNodeFn: func(ctx context.Context, rid uuid.UUID, props map[string]any) (graph.GenericNode, graph.GenericNode, error) {
+			gotProps = props
+			after := graph.NodeFromProps(map[string]any{"id": id.String(), "outputType": "git", "payload": props["payload"]}, "Output")
+			return graph.GenericNode{ID: id, Type: graph.NodeTypeOutput}, after, nil
+		},
+	}
+	ts := setupTestServer(repo)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/namespaces/"+testNS+"/nodes/"+id.String(),
+		strings.NewReader(`{"payload":{"currentRef":"abc123"}}`))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", resp.StatusCode, b)
+	}
+	if gotProps["payload"] != `{"currentRef":"abc123"}` {
+		t.Errorf("stored payload = %v", gotProps["payload"])
+	}
+	if !strings.Contains(string(b), `"payload":{"currentRef":"abc123"}`) {
+		t.Errorf("body = %s, want the new payload", b)
+	}
+
+	req, _ = http.NewRequest(http.MethodPatch, ts.URL+"/namespaces/"+testNS+"/nodes/"+id.String(),
+		strings.NewReader(`{"outputType":""}`))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty outputType: status = %d, want 400", resp.StatusCode)
 	}
 }
 

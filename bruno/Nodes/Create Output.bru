@@ -1,0 +1,28 @@
+meta {
+  name: Create Output
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/namespaces/{{namespace}}/nodes
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "type": "output",
+    "outputType": "git",
+    "description": "Branch with the OIDC flow",
+    "payload": {
+      "repository": "https://github.com/d4nyll/nodoplex.git",
+      "baseRef": "main",
+      "currentRef": "feat/oidc"
+    }
+  }
+}

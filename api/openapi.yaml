@@ -3,7 +3,7 @@ info:
   title: Nodoplex API
   description: >
     Graph-based project management platform. All project entities (visions,
-    goals, features, requirements, tasks, git refs) are stored as nodes in a
+    goals, features, requirements, tasks, outputs) are stored as nodes in a
     Neo4j graph connected by directed edges, giving every stakeholder a single
     shared view of how work connects to company goals.
 
@@ -14,7 +14,7 @@ info:
     nodes that don't exist, and edges can only connect nodes in the same
     namespace. Requests to the unprefixed paths (for example `/nodes`) are
     rejected with 400.
-  version: "0.2.0"
+  version: "0.3.0"
 
 servers:
   - url: http://localhost:8080
@@ -146,7 +146,7 @@ paths:
       description: >
         Both nodes must exist in the request's namespace. `BREAKS_DOWN_TO`
         and `IMPLEMENTED_BY` follow the breakdown hierarchy
-        (vision → goal → feature → requirement → task → gitref).
+        (vision → goal → feature → requirement → task → output).
         `DEPENDS_ON` means the source depends on the target; both nodes must
         have the same type, a node can't depend on itself, and an edge that
         would close a cycle of `DEPENDS_ON` edges is rejected with 409.
@@ -429,7 +429,7 @@ components:
     # ── Enums ───────────────────────────────────────────────
     NodeType:
       type: string
-      enum: [vision, goal, feature, requirement, task, gitref]
+      enum: [vision, goal, feature, requirement, task, output]
 
     TaskStatus:
       type: string
@@ -438,10 +438,6 @@ components:
     EdgeType:
       type: string
       enum: [BREAKS_DOWN_TO, IMPLEMENTED_BY, DEPENDS_ON]
-
-    GitRefKind:
-      type: string
-      enum: [commit, branch]
 
     ChangeAction:
       type: string
@@ -542,30 +538,57 @@ components:
         status:
           $ref: "#/components/schemas/TaskStatus"
 
-    GitRef:
+    Output:
       type: object
-      required: [id, type, repo, refType, ref]
+      description: >
+        Something a task produced, such as a Git branch, a document or a
+        deployment. Attach it to its task with an `IMPLEMENTED_BY` edge from
+        the task. Nodoplex stores `outputType` and `payload` without
+        interpreting them.
+      required: [id, type, outputType]
       properties:
         id:
           type: string
           format: uuid
         type:
           type: string
-          enum: [gitref]
-        repo:
+          enum: [output]
+        outputType:
           type: string
-          description: Repository URL or name
-        refType:
-          $ref: "#/components/schemas/GitRefKind"
-        ref:
+          minLength: 1
+          description: >
+            Kind of output, chosen by the client, for example `git`.
+            Nodoplex doesn't interpret it, but `git` has a documented payload
+            shape (see GitOutputPayload).
+        description:
           type: string
-          description: Commit SHA or branch name
-        url:
+          description: What the output is
+        payload:
+          $ref: "#/components/schemas/OutputPayload"
+
+    OutputPayload:
+      type: object
+      additionalProperties: true
+      description: >
+        Any JSON object. Nodoplex stores it and returns it unchanged, without
+        interpreting or validating it. For `outputType: git`, use the shape of
+        GitOutputPayload.
+
+    GitOutputPayload:
+      type: object
+      description: >
+        Documented payload shape for an output with `outputType: git`.
+        Nodoplex doesn't validate payloads against it.
+      properties:
+        repository:
           type: string
-          description: Link to remote (e.g. GitHub)
-        message:
+          description: Git remote URL, for example https://github.com/d4nyll/nodoplex.git
+        baseRef:
           type: string
-          description: Commit message or branch description
+          description: Git ref the work started from, for example `main`
+        currentRef:
+          type: string
+          description: Git ref that holds the work, for example a branch name or a commit SHA
 
     # ── Polymorphic Node ────────────────────────────────────
     Node:
@@ -575,7 +598,7 @@ components:
         - $ref: "#/components/schemas/Feature"
         - $ref: "#/components/schemas/Requirement"
         - $ref: "#/components/schemas/Task"
-        - $ref: "#/components/schemas/GitRef"
+        - $ref: "#/components/schemas/Output"
       discriminator:
         propertyName: type
         mapping:
@@ -584,7 +607,7 @@ components:
           feature: "#/components/schemas/Feature"
           requirement: "#/components/schemas/Requirement"
           task: "#/components/schemas/Task"
-          gitref: "#/components/schemas/GitRef"
+          output: "#/components/schemas/Output"
 
     NodeArray:
       type: object
@@ -641,7 +664,7 @@ components:
         - $ref: "#/components/schemas/CreateFeature"
         - $ref: "#/components/schemas/CreateRequirement"
         - $ref: "#/components/schemas/CreateTask"
-        - $ref: "#/components/schemas/CreateGitRef"
+        - $ref: "#/components/schemas/CreateOutput"
       discriminator:
         propertyName: type
         mapping:
@@ -650,7 +673,7 @@ components:
           feature: "#/components/schemas/CreateFeature"
           requirement: "#/components/schemas/CreateRequirement"
           task: "#/components/schemas/CreateTask"
-          gitref: "#/components/schemas/CreateGitRef"
+          output: "#/components/schemas/CreateOutput"
 
     CreateVision:
       type: object
@@ -722,26 +745,30 @@ components:
         status:
           $ref: "#/components/schemas/TaskStatus"
 
-    CreateGitRef:
+    CreateOutput:
       type: object
-      required: [type, repo, refType, ref]
+      required: [type, outputType]
       properties:
         type:
           type: string
-          enum: [gitref]
-        repo:
+          enum: [output]
+        outputType:
           type: string
-        refType:
-          $ref: "#/components/schemas/GitRefKind"
-        ref:
+          minLength: 1
+          description: >
+            Kind of output, chosen by the client, for example `git`.
+            Nodoplex doesn't interpret it, but `git` has a documented payload
+            shape (see GitOutputPayload).
+        description:
           type: string
-        url:
-          type: string
-        message:
-          type: string
+        payload:
+          $ref: "#/components/schemas/OutputPayload"
 
     UpdateNodeRequest:
       type: object
+      description: >
+        Fields to change. `outputType` and `payload` only apply to Output
+        nodes, and `payload` replaces the whole stored payload.
       properties:
         title:
           type: string
@@ -759,20 +786,11 @@ components:
           type: string
           format: date
           description: Only applicable for Goal nodes (YYYY-MM-DD)
-        repo:
+        outputType:
           type: string
-          description: Only applicable for GitRef nodes
-        refType:
-          $ref: "#/components/schemas/GitRefKind"
-        ref:
-          type: string
-          description: Only applicable for GitRef nodes
-        url:
-          type: string
-          description: Only applicable for GitRef nodes
-        message:
-          type: string
-          description: Only applicable for GitRef nodes
+          minLength: 1
+        payload:
+          $ref: "#/components/schemas/OutputPayload"
 
     # ── Edges ───────────────────────────────────────────────
     Edge:

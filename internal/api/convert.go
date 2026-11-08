@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -79,19 +80,16 @@ func parseCreateNodeRequest(req CreateNodeRequest) (string, map[string]any, erro
 		}
 		props["status"] = string(v.Status)
 
-	case "gitref":
-		v, err := req.AsCreateGitRef()
+	case "output":
+		v, err := req.AsCreateOutput()
 		if err != nil {
 			return "", nil, err
 		}
-		props["repo"] = v.Repo
-		props["refType"] = string(v.RefType)
-		props["ref"] = v.Ref
-		if v.Url != nil {
-			props["url"] = *v.Url
+		if err := outputProps(props, &v.OutputType, v.Payload); err != nil {
+			return "", nil, err
 		}
-		if v.Message != nil {
-			props["message"] = *v.Message
+		if v.Description != nil {
+			props["description"] = *v.Description
 		}
 
 	default:
@@ -101,8 +99,29 @@ func parseCreateNodeRequest(req CreateNodeRequest) (string, map[string]any, erro
 	return disc, props, nil
 }
 
+var errEmptyOutputType = errors.New("outputType must not be empty")
+
+// outputProps adds an Output's outputType and payload to props, when set.
+// The payload is stored as a JSON string.
+func outputProps(props map[string]any, outputType *string, payload *OutputPayload) error {
+	if outputType != nil {
+		if *outputType == "" {
+			return errEmptyOutputType
+		}
+		props["outputType"] = *outputType
+	}
+	if payload != nil {
+		p, err := graph.PayloadProp(*payload)
+		if err != nil {
+			return fmt.Errorf("payload: %w", err)
+		}
+		props["payload"] = p
+	}
+	return nil
+}
+
 // updateRequestToProps converts an UpdateNodeRequest to a properties map.
-func updateRequestToProps(req UpdateNodeRequest) map[string]any {
+func updateRequestToProps(req UpdateNodeRequest) (map[string]any, error) {
 	props := map[string]any{}
 	if req.Title != nil {
 		props["title"] = *req.Title
@@ -122,22 +141,10 @@ func updateRequestToProps(req UpdateNodeRequest) map[string]any {
 	if req.TargetDate != nil {
 		props["targetDate"] = req.TargetDate.Time.Format("2006-01-02")
 	}
-	if req.Repo != nil {
-		props["repo"] = *req.Repo
+	if err := outputProps(props, req.OutputType, req.Payload); err != nil {
+		return nil, err
 	}
-	if req.RefType != nil {
-		props["refType"] = string(*req.RefType)
-	}
-	if req.Ref != nil {
-		props["ref"] = *req.Ref
-	}
-	if req.Url != nil {
-		props["url"] = *req.Url
-	}
-	if req.Message != nil {
-		props["message"] = *req.Message
-	}
-	return props
+	return props, nil
 }
 
 // genericNodeToAPI converts a graph.GenericNode to an api.Node union type.
@@ -214,21 +221,18 @@ func genericNodeToAPI(n graph.GenericNode) (Node, error) {
 			return node, err
 		}
 
-	case graph.NodeTypeGitRef:
-		refType := Commit
-		if n.RefType != nil {
-			refType = GitRefKind(*n.RefType)
+	case graph.NodeTypeOutput:
+		v := Output{
+			Id:          openapi_types.UUID(n.ID),
+			Type:        OutputTypeOutput,
+			OutputType:  derefStr(n.OutputType),
+			Description: n.Description,
 		}
-		v := GitRef{
-			Id:      openapi_types.UUID(n.ID),
-			Type:    GitRefTypeGitref,
-			Repo:    derefStr(n.Repo),
-			RefType: refType,
-			Ref:     derefStr(n.Ref),
-			Url:     n.URL,
-			Message: n.Message,
+		if n.Payload != nil {
+			p := OutputPayload(n.Payload)
+			v.Payload = &p
 		}
-		if err := node.FromGitRef(v); err != nil {
+		if err := node.FromOutput(v); err != nil {
 			return node, err
 		}
 

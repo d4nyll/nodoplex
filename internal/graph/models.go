@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -44,7 +45,7 @@ const (
 	NodeTypeFeature     NodeType = "feature"
 	NodeTypeRequirement NodeType = "requirement"
 	NodeTypeTask        NodeType = "task"
-	NodeTypeGitRef      NodeType = "gitref"
+	NodeTypeOutput      NodeType = "output"
 )
 
 // NodeTypeToLabel maps API node types to Neo4j labels.
@@ -54,7 +55,7 @@ var NodeTypeToLabel = map[NodeType]string{
 	NodeTypeFeature:     "Feature",
 	NodeTypeRequirement: "Requirement",
 	NodeTypeTask:        "Task",
-	NodeTypeGitRef:      "GitRef",
+	NodeTypeOutput:      "Output",
 }
 
 // LabelToNodeType maps Neo4j labels to API node types.
@@ -64,7 +65,7 @@ var LabelToNodeType = map[string]NodeType{
 	"Feature":     NodeTypeFeature,
 	"Requirement": NodeTypeRequirement,
 	"Task":        NodeTypeTask,
-	"GitRef":      NodeTypeGitRef,
+	"Output":      NodeTypeOutput,
 }
 
 // EdgeType enumerates the allowed edge types.
@@ -88,7 +89,7 @@ var AllowedEdges = map[EdgeType]map[NodeType]NodeType{
 		NodeTypeRequirement: NodeTypeTask,
 	},
 	EdgeTypeImplementedBy: {
-		NodeTypeTask: NodeTypeGitRef,
+		NodeTypeTask: NodeTypeOutput,
 	},
 	EdgeTypeDependsOn: {
 		NodeTypeVision:      NodeTypeVision,
@@ -96,7 +97,7 @@ var AllowedEdges = map[EdgeType]map[NodeType]NodeType{
 		NodeTypeFeature:     NodeTypeFeature,
 		NodeTypeRequirement: NodeTypeRequirement,
 		NodeTypeTask:        NodeTypeTask,
-		NodeTypeGitRef:      NodeTypeGitRef,
+		NodeTypeOutput:      NodeTypeOutput,
 	},
 }
 
@@ -110,11 +111,16 @@ type GenericNode struct {
 	AcceptanceCriteria *string   `json:"acceptanceCriteria,omitempty"`
 	Status             *string   `json:"status,omitempty"`
 	TargetDate         *string   `json:"targetDate,omitempty"` // Goal: YYYY-MM-DD
-	Repo               *string   `json:"repo,omitempty"`
-	RefType            *string   `json:"refType,omitempty"`
-	Ref                *string   `json:"ref,omitempty"`
-	URL                *string   `json:"url,omitempty"`
-	Message            *string   `json:"message,omitempty"`
+	OutputType         *string   `json:"outputType,omitempty"`
+	// Payload is stored in Neo4j as a JSON string, because Neo4j properties
+	// can't hold maps.
+	Payload map[string]any `json:"payload,omitempty"`
+}
+
+// PayloadProp encodes an Output payload as the JSON string stored in Neo4j.
+func PayloadProp(payload map[string]any) (string, error) {
+	b, err := json.Marshal(payload)
+	return string(b), err
 }
 
 // ToProps converts a GenericNode to a map suitable for Neo4j properties.
@@ -140,20 +146,11 @@ func (n *GenericNode) ToProps() map[string]any {
 	if n.TargetDate != nil {
 		props["targetDate"] = *n.TargetDate
 	}
-	if n.Repo != nil {
-		props["repo"] = *n.Repo
+	if n.OutputType != nil {
+		props["outputType"] = *n.OutputType
 	}
-	if n.RefType != nil {
-		props["refType"] = *n.RefType
-	}
-	if n.Ref != nil {
-		props["ref"] = *n.Ref
-	}
-	if n.URL != nil {
-		props["url"] = *n.URL
-	}
-	if n.Message != nil {
-		props["message"] = *n.Message
+	if n.Payload != nil {
+		props["payload"], _ = PayloadProp(n.Payload)
 	}
 	return props
 }
@@ -187,20 +184,11 @@ func NodeFromProps(props map[string]any, label string) GenericNode {
 	if v, ok := props["targetDate"].(string); ok {
 		n.TargetDate = &v
 	}
-	if v, ok := props["repo"].(string); ok {
-		n.Repo = &v
+	if v, ok := props["outputType"].(string); ok {
+		n.OutputType = &v
 	}
-	if v, ok := props["refType"].(string); ok {
-		n.RefType = &v
-	}
-	if v, ok := props["ref"].(string); ok {
-		n.Ref = &v
-	}
-	if v, ok := props["url"].(string); ok {
-		n.URL = &v
-	}
-	if v, ok := props["message"].(string); ok {
-		n.Message = &v
+	if v, ok := props["payload"].(string); ok {
+		_ = json.Unmarshal([]byte(v), &n.Payload)
 	}
 	return n
 }

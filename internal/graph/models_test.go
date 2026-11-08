@@ -19,7 +19,7 @@ func TestNodeTypeToLabel(t *testing.T) {
 		{NodeTypeFeature, "Feature"},
 		{NodeTypeRequirement, "Requirement"},
 		{NodeTypeTask, "Task"},
-		{NodeTypeGitRef, "GitRef"},
+		{NodeTypeOutput, "Output"},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.nodeType), func(t *testing.T) {
@@ -44,7 +44,7 @@ func TestLabelToNodeType(t *testing.T) {
 		{"Feature", NodeTypeFeature},
 		{"Requirement", NodeTypeRequirement},
 		{"Task", NodeTypeTask},
-		{"GitRef", NodeTypeGitRef},
+		{"Output", NodeTypeOutput},
 	}
 	for _, tt := range tests {
 		t.Run(tt.label, func(t *testing.T) {
@@ -110,8 +110,8 @@ func TestAllowedEdges(t *testing.T) {
 	if ib == nil {
 		t.Fatal("AllowedEdges missing IMPLEMENTED_BY")
 	}
-	if got := ib[NodeTypeTask]; got != NodeTypeGitRef {
-		t.Errorf("AllowedEdges[IMPLEMENTED_BY][task] = %q, want %q", got, NodeTypeGitRef)
+	if got := ib[NodeTypeTask]; got != NodeTypeOutput {
+		t.Errorf("AllowedEdges[IMPLEMENTED_BY][task] = %q, want %q", got, NodeTypeOutput)
 	}
 }
 
@@ -125,11 +125,8 @@ func TestToProps_AllFieldsSet(t *testing.T) {
 		Priority:           intPtr(1),
 		AcceptanceCriteria: strPtr("AC"),
 		Status:             strPtr("backlog"),
-		Repo:               strPtr("myrepo"),
-		RefType:            strPtr("commit"),
-		Ref:                strPtr("abc123"),
-		URL:                strPtr("https://example.com"),
-		Message:            strPtr("commit message"),
+		OutputType:         strPtr("git"),
+		Payload:            map[string]any{"currentRef": "abc123"},
 	}
 
 	props := n.ToProps()
@@ -147,11 +144,8 @@ func TestToProps_AllFieldsSet(t *testing.T) {
 		"description":        "Description",
 		"acceptanceCriteria": "AC",
 		"status":             "backlog",
-		"repo":               "myrepo",
-		"refType":            "commit",
-		"ref":                "abc123",
-		"url":                "https://example.com",
-		"message":            "commit message",
+		"outputType":         "git",
+		"payload":            `{"currentRef":"abc123"}`,
 	}
 	for key, want := range checks {
 		got, ok := props[key]
@@ -194,11 +188,8 @@ func TestNodeFromProps_AllFields(t *testing.T) {
 		"priority":           int64(3),
 		"acceptanceCriteria": "Must pass",
 		"status":             "done",
-		"repo":               "my-repo",
-		"refType":            "branch",
-		"ref":                "main",
-		"url":                "https://github.com",
-		"message":            "Initial commit",
+		"outputType":         "git",
+		"payload":            `{"repository":"https://github.com/d4nyll/nodoplex.git","currentRef":"main"}`,
 	}
 
 	n := NodeFromProps(props, "Feature")
@@ -224,20 +215,11 @@ func TestNodeFromProps_AllFields(t *testing.T) {
 	if n.Status == nil || *n.Status != "done" {
 		t.Errorf("Status = %v, want %q", n.Status, "done")
 	}
-	if n.Repo == nil || *n.Repo != "my-repo" {
-		t.Errorf("Repo = %v, want %q", n.Repo, "my-repo")
+	if n.OutputType == nil || *n.OutputType != "git" {
+		t.Errorf("OutputType = %v, want %q", n.OutputType, "git")
 	}
-	if n.RefType == nil || *n.RefType != "branch" {
-		t.Errorf("RefType = %v, want %q", n.RefType, "branch")
-	}
-	if n.Ref == nil || *n.Ref != "main" {
-		t.Errorf("Ref = %v, want %q", n.Ref, "main")
-	}
-	if n.URL == nil || *n.URL != "https://github.com" {
-		t.Errorf("URL = %v, want %q", n.URL, "https://github.com")
-	}
-	if n.Message == nil || *n.Message != "Initial commit" {
-		t.Errorf("Message = %v, want %q", n.Message, "Initial commit")
+	if len(n.Payload) != 2 || n.Payload["repository"] != "https://github.com/d4nyll/nodoplex.git" || n.Payload["currentRef"] != "main" {
+		t.Errorf("Payload = %v, want repository and currentRef", n.Payload)
 	}
 }
 
