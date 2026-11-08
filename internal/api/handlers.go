@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,6 +19,10 @@ import (
 )
 
 const keepaliveInterval = 30 * time.Second
+
+// replayPageSize is the number of changelog entries Subscribe reads per query
+// when it replays the changes a reconnecting client missed.
+const replayPageSize = 1000
 
 // Handlers implements the generated ServerInterface.
 type Handlers struct {
@@ -96,7 +102,10 @@ func (h *Handlers) CreateNode(w http.ResponseWriter, r *http.Request, namespace 
 	}
 
 	// Persist change and publish event
-	h.publishChange(r, namespace, events.ActionCreated, node, nil)
+	if err := h.publishChange(r, namespace, events.ActionCreated, node, nil); err != nil {
+		writeChangeNotRecorded(w, err)
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, apiNode)
 }
@@ -205,7 +214,10 @@ func (h *Handlers) UpdateNode(w http.ResponseWriter, r *http.Request, namespace 
 	apiNode, _ := genericNodeToAPI(after)
 
 	// Persist change and publish event
-	h.publishChange(r, namespace, events.ActionUpdated, after, &before)
+	if err := h.publishChange(r, namespace, events.ActionUpdated, after, &before); err != nil {
+		writeChangeNotRecorded(w, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, apiNode)
 }
@@ -222,7 +234,10 @@ func (h *Handlers) DeleteNode(w http.ResponseWriter, r *http.Request, namespace 
 	}
 
 	// Persist change and publish event
-	h.publishChange(r, namespace, events.ActionDeleted, graph.GenericNode{ID: deleted.ID, Type: deleted.Type}, &deleted)
+	if err := h.publishChange(r, namespace, events.ActionDeleted, graph.GenericNode{ID: deleted.ID, Type: deleted.Type}, &deleted); err != nil {
+		writeChangeNotRecorded(w, err)
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -396,7 +411,7 @@ func (h *Handlers) ListChanges(w http.ResponseWriter, r *http.Request, namespace
 		limit = *params.Limit
 	}
 
-	entries, err := h.clStore.ListSince(r.Context(), namespace, string(params.Type), sinceID, limit)
+	entries, err := h.clStore.ListSince(r.Context(), namespace, []string{string(params.Type)}, sinceID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -444,24 +459,76 @@ func (h *Handlers) Subscribe(w http.ResponseWriter, r *http.Request, namespace N
 		}
 	}
 
-	ch, unsub := h.bus.Subscribe(namespace, nodeTypes)
-	defer unsub()
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
 
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
-	flusher.Flush()
 
 	ctx := r.Context()
+
+	send := func(id int64, action string, v any) {
+		data, err := json.Marshal(v)
+		if err != nil {
+			return
+		}
+		_, _ = w.Write([]byte("id: " + itoa64(id) + "\n"))
+		_, _ = w.Write([]byte("event: node." + action + "\n"))
+		_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
+		flusher.Flush()
+	}
+
+	// replay sends the changelog entries after sinceID, adds their ids to sent
+	// and returns the last id it sent (sinceID if it sent none).
+	sent := map[int64]bool{}
+	replay := func(sinceID int64) (int64, error) {
+		for {
+			entries, err := h.clStore.ListSince(ctx, namespace, nodeTypes, sinceID, replayPageSize)
+			if err != nil {
+				log.Printf("subscribe: replay in namespace %q after change %d: %v", namespace, sinceID, err)
+				return sinceID, err
+			}
+			for _, e := range entries {
+				send(e.ChangeID, e.Action, e)
+				sent[e.ChangeID] = true
+				sinceID = e.ChangeID
+			}
+			if len(entries) < replayPageSize {
+				return sinceID, nil
+			}
+		}
+	}
+
+	// A client that reconnects with Last-Event-ID first gets the changes it
+	// missed. The first replay runs before subscribing, so a long replay
+	// can't overflow the subscription's buffer. The second replay sends the
+	// changes recorded before the subscription started, and the live loop
+	// skips every change a replay sent.
+	resume := params.LastEventID != nil && h.clStore != nil
+	var sinceID int64
+	if resume {
+		var err error
+		if sinceID, err = replay(*params.LastEventID); err != nil {
+			return
+		}
+	}
+	ch, unsub := h.bus.Subscribe(namespace, nodeTypes)
+	defer unsub()
+	if resume {
+		if _, err := replay(sinceID); err != nil {
+			return
+		}
+	}
+	// Send the headers (with status 200) if no replay has, only now that the
+	// subscription exists, so a client that has the response gets every
+	// change made after it.
+	flusher.Flush()
 
 	// Send keepalive ticker
 	keepalive := make(chan struct{})
@@ -489,15 +556,9 @@ func (h *Handlers) Subscribe(w http.ResponseWriter, r *http.Request, namespace N
 			if !ok {
 				return
 			}
-			data, err := json.Marshal(event)
-			if err != nil {
-				continue
+			if !sent[event.ChangeID] {
+				send(event.ChangeID, string(event.Action), event)
 			}
-			eventType := "node." + string(event.Action)
-			_, _ = w.Write([]byte("id: " + itoa64(event.ChangeID) + "\n"))
-			_, _ = w.Write([]byte("event: " + eventType + "\n"))
-			_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
-			flusher.Flush()
 		case <-keepalive:
 			_, _ = w.Write([]byte(": keepalive\n\n"))
 			flusher.Flush()
@@ -507,8 +568,10 @@ func (h *Handlers) Subscribe(w http.ResponseWriter, r *http.Request, namespace N
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// publishChange persists a change to PostgreSQL and publishes it to the event bus.
-func (h *Handlers) publishChange(r *http.Request, namespace string, action events.ChangeAction, node graph.GenericNode, previous *graph.GenericNode) {
+// publishChange persists a change to PostgreSQL and publishes it to the event
+// bus. If the changelog insert fails, it logs the change it couldn't record,
+// publishes nothing and returns the error.
+func (h *Handlers) publishChange(r *http.Request, namespace string, action events.ChangeAction, node graph.GenericNode, previous *graph.GenericNode) error {
 	nodeJSON, _ := json.Marshal(nodeToJSONMap(node))
 	var prevJSON json.RawMessage
 	if previous != nil {
@@ -535,10 +598,12 @@ func (h *Handlers) publishChange(r *http.Request, namespace string, action event
 	var changeID int64
 	if h.clStore != nil {
 		var err error
-		changeID, err = h.clStore.Append(r.Context(), entry)
+		// The node change is already saved, so a client that disconnects now
+		// must not cancel the insert that records it.
+		changeID, err = h.clStore.Append(context.WithoutCancel(r.Context()), entry)
 		if err != nil {
-			// Log but don't fail the request
-			return
+			log.Printf("changelog: %s of %s %s in namespace %q not recorded: %v", action, node.Type, node.ID, namespace, err)
+			return err
 		}
 	}
 
@@ -552,6 +617,13 @@ func (h *Handlers) publishChange(r *http.Request, namespace string, action event
 		Previous:  prevJSON,
 		Timestamp: now,
 	})
+	return nil
+}
+
+// writeChangeNotRecorded responds 500 to a write whose node change succeeded
+// in Neo4j but whose changelog insert failed.
+func writeChangeNotRecorded(w http.ResponseWriter, err error) {
+	writeError(w, http.StatusInternalServerError, "the node change was saved but not recorded in the changelog: "+err.Error())
 }
 
 func nodeToJSONMap(n graph.GenericNode) map[string]any {
@@ -567,6 +639,9 @@ func nodeToJSONMap(n graph.GenericNode) map[string]any {
 	}
 	if n.Priority != nil {
 		m["priority"] = *n.Priority
+	}
+	if n.TargetDate != nil {
+		m["targetDate"] = *n.TargetDate
 	}
 	if n.AcceptanceCriteria != nil {
 		m["acceptanceCriteria"] = *n.AcceptanceCriteria
