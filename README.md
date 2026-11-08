@@ -176,7 +176,7 @@ Every operation sees only its own namespace:
 - Reads, lists, traversals, edge creation and deletion return 404 for a node in another namespace, with the same body as for a node that doesn't exist.
 - An edge can only connect two nodes in the request's namespace, so no edge crosses namespaces.
 - `/changes` and `/subscribe` only return changes made in the request's namespace. Change ids come from one sequence shared by all namespaces, so the ids a namespace sees have gaps where other namespaces made changes.
-- A request to an unprefixed path such as `/nodes`, or with an empty namespace such as `/namespaces//nodes`, gets a 400. So does a namespace that is too long, contains any other character (for example `/`, `@`, a space or a non-ASCII letter, encoded or not), or starts or ends with a period.
+- A request to an unprefixed path such as `/nodes`, or with an empty namespace such as `/namespaces//nodes`, gets a 400. So does a namespace that is too long, contains any other character (for example `/`, `@`, a space or a non-ASCII letter, encoded or not), or starts or ends with a period. The error message names the rule that the namespace breaks, for example `namespace contains '/', which is not allowed; ...`.
 
 Nodes carry a `:Node` label and a `namespace` property in Neo4j. Lookups by id seek the unique constraint on `(:Node).id` and lists seek the index on `(:Node).namespace`; `NODOPLEX_INTEGRATION=1 go test ./internal/graph -run Integration` checks the query plans.
 

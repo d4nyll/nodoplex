@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
+	"strconv"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -13,27 +15,47 @@ import (
 // matching maxLength in the OpenAPI spec.
 const MaxNamespaceLength = 256
 
-// ErrInvalidNamespace is returned when a namespace fails ValidateNamespace.
-var ErrInvalidNamespace = errors.New("invalid namespace")
-
-// namespacePattern matches the pattern of the Namespace parameter in the
-// OpenAPI spec. A period can't start or end a namespace, so "." and ".."
-// (which the HTTP router resolves as path segments) are invalid.
-var namespacePattern = regexp.MustCompile(`^[A-Za-z0-9_:-]([A-Za-z0-9_:.-]*[A-Za-z0-9_:-])?$`)
-
 // ValidateNamespace checks that ns is usable as a namespace: 1 to
 // MaxNamespaceLength ASCII letters, digits, hyphens, underscores, colons and
-// periods, with no period at the start or end.
+// periods, with no period at the start or end, matching the pattern of the
+// Namespace parameter in the OpenAPI spec. A period can't start or end a
+// namespace, so "." and ".." (which the HTTP router resolves as path
+// segments) are invalid. The error says which rule ns breaks.
 func ValidateNamespace(ns string) error {
+	if ns == "" {
+		return fmt.Errorf("namespace is empty; it must be 1 to %d characters long", MaxNamespaceLength)
+	}
+	for i, r := range ns {
+		if !isNamespaceChar(r) {
+			return fmt.Errorf("namespace contains %s, which is not allowed; allowed characters are ASCII letters, digits, '-', '_', ':' and '.'", quoteChar(ns[i:]))
+		}
+	}
 	switch {
-	case ns == "":
-		return fmt.Errorf("%w: must not be empty", ErrInvalidNamespace)
+	case ns[0] == '.':
+		return errors.New("namespace starts with '.', which is not allowed")
+	case ns[len(ns)-1] == '.':
+		return errors.New("namespace ends with '.', which is not allowed")
 	case len(ns) > MaxNamespaceLength:
-		return fmt.Errorf("%w: must be at most %d characters", ErrInvalidNamespace, MaxNamespaceLength)
-	case !namespacePattern.MatchString(ns):
-		return fmt.Errorf("%w: may contain only ASCII letters, digits, '-', '_', ':' and '.', and must not start or end with '.'", ErrInvalidNamespace)
+		return fmt.Errorf("namespace is %d characters long; the maximum is %d", len(ns), MaxNamespaceLength)
 	}
 	return nil
+}
+
+func isNamespaceChar(r rune) bool {
+	return 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' ||
+		r == '-' || r == '_' || r == ':' || r == '.'
+}
+
+// quoteChar quotes the first character of s for an error message. A
+// printable character appears as is, in single quotes; anything else, such
+// as a newline or a byte that isn't valid UTF-8, appears as a Go escape
+// sequence in double quotes, so the message can't inject lines into a log.
+func quoteChar(s string) string {
+	r, size := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError && size == 1 || !unicode.IsPrint(r) {
+		return strconv.Quote(s[:size])
+	}
+	return "'" + s[:size] + "'"
 }
 
 // NodeType enumerates the allowed node types.

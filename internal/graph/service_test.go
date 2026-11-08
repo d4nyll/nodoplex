@@ -664,40 +664,44 @@ func TestService_ListNodes_Delegates(t *testing.T) {
 // ── Namespace Tests ──────────────────────────────────────────────────────────
 
 func TestValidateNamespace(t *testing.T) {
+	const allowed = "allowed characters are ASCII letters, digits, '-', '_', ':' and '.'"
 	tests := []struct {
-		name  string
-		ns    string
-		valid bool
+		name string
+		ns   string
+		want string // error message; empty means valid
 	}{
-		{"simple", "org_123", true},
-		{"uuid", "0b6f7c1e-3a0e-4b8e-9a51-6d3c2d7c1f00", true},
-		{"all allowed characters", "Org-1_team:prod.eu", true},
-		{"single character", "a", true},
-		{"max length", strings.Repeat("a", MaxNamespaceLength), true},
-		{"dots inside", "a..b", true},
-		{"empty", "", false},
-		{"too long", strings.Repeat("a", MaxNamespaceLength+1), false},
-		{"slash", "a/b", false},
-		{"space", "a b", false},
-		{"at sign", "a@b", false},
-		{"percent", "a%2Fb", false},
-		{"unicode", "größe", false},
-		{"invalid utf-8", "org\xff", false},
-		{"nul", "org\x00", false},
-		{"newline", "org\nfake log line", false},
-		{"dot", ".", false},
-		{"dot dot", "..", false},
-		{"leading dot", ".a", false},
-		{"trailing dot", "a.", false},
+		{"simple", "org_123", ""},
+		{"uuid", "0b6f7c1e-3a0e-4b8e-9a51-6d3c2d7c1f00", ""},
+		{"all allowed characters", "Org-1_team:prod.eu", ""},
+		{"single character", "a", ""},
+		{"max length", strings.Repeat("a", MaxNamespaceLength), ""},
+		{"dots inside", "a..b", ""},
+		{"empty", "", "namespace is empty; it must be 1 to 256 characters long"},
+		{"too long", strings.Repeat("a", MaxNamespaceLength+1), "namespace is 257 characters long; the maximum is 256"},
+		{"slash", "a/b", "namespace contains '/', which is not allowed; " + allowed},
+		{"leading slash", "/team", "namespace contains '/', which is not allowed; " + allowed},
+		{"space", "a b", "namespace contains ' ', which is not allowed; " + allowed},
+		{"at sign", "a@b", "namespace contains '@', which is not allowed; " + allowed},
+		{"percent", "a%2Fb", "namespace contains '%', which is not allowed; " + allowed},
+		{"unicode", "größe", "namespace contains 'ö', which is not allowed; " + allowed},
+		{"invalid utf-8", "org\xff", `namespace contains "\xff", which is not allowed; ` + allowed},
+		{"nul", "org\x00", `namespace contains "\x00", which is not allowed; ` + allowed},
+		{"newline", "org\nfake log line", `namespace contains "\n", which is not allowed; ` + allowed},
+		{"too long with a bad character", strings.Repeat("a", MaxNamespaceLength) + "/", "namespace contains '/', which is not allowed; " + allowed},
+		{"dot", ".", "namespace starts with '.', which is not allowed"},
+		{"dot dot", "..", "namespace starts with '.', which is not allowed"},
+		{"leading dot", ".a", "namespace starts with '.', which is not allowed"},
+		{"trailing dot", "a.", "namespace ends with '.', which is not allowed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateNamespace(tt.ns)
-			if tt.valid && err != nil {
-				t.Errorf("ValidateNamespace(%q) = %v, want nil", tt.ns, err)
+			got := ""
+			if err != nil {
+				got = err.Error()
 			}
-			if !tt.valid && !errors.Is(err, ErrInvalidNamespace) {
-				t.Errorf("ValidateNamespace(%q) = %v, want ErrInvalidNamespace", tt.ns, err)
+			if got != tt.want {
+				t.Errorf("ValidateNamespace(%q) = %q, want %q", tt.ns, got, tt.want)
 			}
 		})
 	}
@@ -707,8 +711,8 @@ func TestService_CreateNode_InvalidNamespace(t *testing.T) {
 	repo := &mockRepo{}
 	svc := NewService(repo)
 	_, err := svc.CreateNode(context.Background(), "", NodeTypeVision, map[string]any{"title": "x"})
-	if !errors.Is(err, ErrInvalidNamespace) {
-		t.Fatalf("err = %v, want ErrInvalidNamespace", err)
+	if err == nil || err.Error() != "namespace is empty; it must be 1 to 256 characters long" {
+		t.Fatalf("err = %v, want the empty namespace error", err)
 	}
 	if len(repo.namespaces) != 0 {
 		t.Errorf("repo was called %d times, want 0", len(repo.namespaces))

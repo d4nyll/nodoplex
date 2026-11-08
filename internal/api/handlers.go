@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -36,36 +37,30 @@ func NewHandlers(graphSvc *graph.Service, clStore *changelog.Store, bus *events.
 // NewRouter registers the generated API routes on mux and returns the handler
 // to serve. Every API route lives under /namespaces/{namespace}; the
 // namespace is validated before any handler runs. Requests to the unprefixed
-// paths, or whose namespace segment is empty, "." or "..", are rejected with
-// 400 rather than falling through to 404 or a redirect.
+// paths, or with an invalid namespace segment, are rejected with 400 rather
+// than falling through to 404 or a redirect.
 func NewRouter(h *Handlers, mux *http.ServeMux) http.Handler {
-	HandlerWithOptions(h, StdHTTPServerOptions{
-		BaseRouter:  mux,
-		Middlewares: []MiddlewareFunc{validateNamespace},
-	})
+	HandlerWithOptions(h, StdHTTPServerOptions{BaseRouter: mux})
 	for _, p := range []string{"/nodes", "/nodes/", "/edges", "/changes", "/subscribe"} {
 		mux.HandleFunc(p, missingNamespace)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// ServeMux would redirect /namespaces//nodes, /namespaces/./nodes and
-		// /namespaces/../nodes to a cleaned path.
-		if rest, ok := strings.CutPrefix(r.URL.Path, "/namespaces/"); ok {
-			if seg, _, _ := strings.Cut(rest, "/"); seg == "" || seg == "." || seg == ".." {
-				writeError(w, http.StatusBadRequest, graph.ValidateNamespace(seg).Error())
+		// The namespace is read from the escaped path: in r.URL.Path an
+		// encoded slash (%2F) looks like a segment boundary. Checking here
+		// also stops ServeMux from redirecting /namespaces//nodes,
+		// /namespaces/./nodes and /namespaces/../nodes to a cleaned path.
+		if rest, ok := strings.CutPrefix(r.URL.EscapedPath(), "/namespaces/"); ok {
+			seg, _, _ := strings.Cut(rest, "/")
+			ns, err := url.PathUnescape(seg)
+			if err == nil {
+				err = graph.ValidateNamespace(ns)
+			}
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 		}
 		mux.ServeHTTP(w, r)
-	})
-}
-
-func validateNamespace(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := graph.ValidateNamespace(r.PathValue("namespace")); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		next.ServeHTTP(w, r)
 	})
 }
 
