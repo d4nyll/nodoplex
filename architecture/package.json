@@ -1,0 +1,12 @@
+{
+  "name": "nodoplex-architecture",
+  "private": true,
+  "scripts": {
+    "start": "likec4 start",
+    "validate": "likec4 validate",
+    "build": "likec4 build -o dist"
+  },
+  "devDependencies": {
+    "likec4": "1.60.0"
+  }
+}

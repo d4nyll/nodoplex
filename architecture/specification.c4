@@ -1,0 +1,48 @@
+specification {
+  element person {
+    notation "Person"
+    style {
+      shape person
+    }
+  }
+  element system {
+    notation "Software system"
+  }
+  element external {
+    notation "External program"
+    style {
+      color gray
+    }
+  }
+  element container {
+    notation "Container"
+  }
+  element webapp {
+    notation "Container: web app"
+    style {
+      shape browser
+    }
+  }
+  element store {
+    notation "Container: data store"
+    style {
+      shape storage
+    }
+  }
+  element component {
+    notation "Component"
+    style {
+      shape component
+    }
+  }
+  element nodeType {
+    notation "Node label in Neo4j"
+    style {
+      shape rectangle
+      color sky
+    }
+  }
+
+  // An element or relationship that a proposal plans and the code does not have yet
+  tag planned
+}

@@ -1,0 +1,142 @@
+views {
+
+  style element.tag = #planned {
+    color amber
+    border dashed
+  }
+
+  // ── Static views: click an element to open the next level ──
+
+  view index {
+    title "System context"
+    description "Who uses Nodoplex. Click Nodoplex to see its containers."
+    include
+      user,
+      apiClients,
+      nodoplex
+  }
+
+  view containers of nodoplex {
+    title "Containers"
+    description '''
+      The web client, the API, and its 2 databases. Click a container with
+      components to open it.
+    '''
+    include *
+    include user, apiClients
+  }
+
+  view api of nodoplex.api {
+    title "Nodoplex API: components"
+    description "The components of the API process, and the containers and programs they talk to."
+    include
+      *,
+      nodoplex.web,
+      apiClients,
+      nodoplex.neo4j,
+      nodoplex.postgres
+    autoLayout TopBottom 80 60
+  }
+
+  view web of nodoplex.web {
+    title "Nodoplex web: components"
+    description "The components of the web client, and the API they call."
+    include
+      *,
+      user,
+      nodoplex.api
+    autoLayout TopBottom 80 60
+  }
+
+  view graph_schema of nodoplex.neo4j {
+    title "Graph database: node labels"
+    description '''
+      The node labels in Neo4j and the tree edges between them. The amber,
+      dashed Output node is planned: it replaces GitRef and is not in the code
+      yet. DEPENDS_ON edges, between 2 nodes of the same type, are left out.
+    '''
+    include
+      nodoplex.neo4j.*
+    autoLayout TopBottom 60 60
+  }
+
+  // ── Dynamic views ─────────────────────────────────────────
+
+  dynamic view create_node {
+    variant sequence
+    title "Flow: create a node, with its changelog entry and server-sent event"
+    description '''
+      The web client runs in the namespace `default`. The user has the live
+      feed open on the activity page, and creates a Task with the create node
+      dialog.
+    '''
+
+    user -> nodoplex.web.activityFeed "turns on the live feed"
+    nodoplex.web.activityFeed -> nodoplex.api.router "GET /namespaces/default/subscribe (EventSource)"
+    nodoplex.api.router -> nodoplex.api.changefeed "checks the namespace; Subscribe"
+    nodoplex.api.changefeed -> nodoplex.api.eventBus "registers a subscriber for namespace default, every node type"
+    nodoplex.web.activityFeed <- nodoplex.api.changefeed "200 text/event-stream, held open"
+
+    user -> nodoplex.web.createDialog "fills in a Task and submits"
+    nodoplex.web.createDialog -> nodoplex.api.router "POST /namespaces/default/nodes {type: task, title, status}, through the API client"
+    nodoplex.api.router -> nodoplex.api.nodeHandlers "checks the namespace; CreateNode"
+    nodoplex.api.nodeHandlers -> nodoplex.api.graphService "CreateNode: validates the namespace and type, generates a UUID"
+    nodoplex.api.graphService -> nodoplex.api.repository "CreateNode with the label Task"
+    nodoplex.api.repository -> nodoplex.neo4j "CREATE (n:Node:Task $props) SET n.namespace = 'default'"
+    nodoplex.api.nodeHandlers -> nodoplex.api.changelogStore "Append: action created, the node as JSON"
+    nodoplex.api.changelogStore -> nodoplex.postgres "INSERT INTO changelog ... RETURNING change_id"
+    nodoplex.api.nodeHandlers -> nodoplex.api.eventBus "Publish the change with its change_id" {
+      notes "If the changelog insert fails, publishChange returns without publishing, and the request still gets 201 (internal/api/handlers.go)."
+    }
+    nodoplex.web.createDialog <- nodoplex.api.nodeHandlers "201 with the node" {
+      notes "The dialog closes, and the App shell's refresh makes the open page refetch."
+    }
+    nodoplex.api.eventBus -> nodoplex.api.changefeed "delivers the change: the namespace matches and no type filter is set" {
+      notes "Each subscriber's channel buffers 64 changes. Publish drops a change for a subscriber whose buffer is full."
+    }
+    nodoplex.api.changefeed -> nodoplex.web.activityFeed "id: <change_id>, event: node.created, data: the change as JSON"
+  }
+
+  dynamic view add_dependency {
+    variant sequence
+    title "Flow: add a dependency, with the cycle check"
+    description '''
+      In the namespace `default`, the user records that Requirement B depends
+      on Requirement A, from B's detail panel.
+    '''
+
+    user -> nodoplex.web.detailPanel "opens Requirement B and clicks Link Node"
+    nodoplex.web.detailPanel -> nodoplex.web.linkDialog "opens with B as the source"
+    user -> nodoplex.web.linkDialog "picks DEPENDS_ON and 'This node depends on target', types a search"
+    nodoplex.web.linkDialog -> nodoplex.api.router "GET /namespaces/default/nodes?search=...&type=requirement&limit=10"
+    user -> nodoplex.web.linkDialog "picks Requirement A and submits"
+    nodoplex.web.linkDialog -> nodoplex.api.router "POST /namespaces/default/edges {sourceId: B, targetId: A, type: DEPENDS_ON}"
+    nodoplex.api.router -> nodoplex.api.nodeHandlers "checks the namespace; CreateEdge"
+    nodoplex.api.nodeHandlers -> nodoplex.api.graphService "CreateEdge"
+    nodoplex.api.graphService -> nodoplex.api.graphService "DEPENDS_ON is a known edge type, and B is not A (else 400)"
+    nodoplex.api.graphService -> nodoplex.api.repository "GetNodeType of B, then of A (404 if either is not in the namespace)"
+    nodoplex.api.graphService -> nodoplex.api.graphService "both are Requirements, an allowed DEPENDS_ON pair (else 400)"
+    nodoplex.api.graphService -> nodoplex.api.repository "CreateDependency"
+    nodoplex.api.repository -> nodoplex.neo4j "begins a transaction: MERGE (:DependencyLock {namespace: 'default'})" {
+      notes "Neo4j holds a write lock on the lock node until the transaction ends, so 2 requests can't each add half of a cycle in the same namespace."
+    }
+    nodoplex.api.repository -> nodoplex.neo4j "checks for an edge B -> A, and for a DEPENDS_ON path from A to B (shortestPath)"
+    alt {
+      when 'A already depends on B, directly or through other nodes' {
+        nodoplex.api.graphService <- nodoplex.api.repository "ErrDependencyCycle; the transaction rolls back"
+        nodoplex.web.linkDialog <- nodoplex.api.nodeHandlers "409 {message}"
+        nodoplex.web.linkDialog -> user "shows: Can't add this dependency because it would create a dependency cycle."
+      }
+      when 'B already depends on A' {
+        nodoplex.web.linkDialog <- nodoplex.api.nodeHandlers "201; the existing edge stays the only one"
+      }
+      else {
+        nodoplex.api.repository -> nodoplex.neo4j "CREATE (B)-[:DEPENDS_ON]->(A); commits"
+        nodoplex.web.linkDialog <- nodoplex.api.nodeHandlers "201 with the edge" {
+          notes "Creating an edge writes no changelog entry and sends no server-sent event."
+        }
+        nodoplex.web.linkDialog -> nodoplex.web.detailPanel "onLinked: reloads B with its dependencies"
+      }
+    }
+  }
+}

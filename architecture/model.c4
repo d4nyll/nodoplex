@@ -1,0 +1,370 @@
+model {
+
+  // ── People and outside programs ──────────────────────────
+
+  user = person "Nodoplex user" {
+    description '''
+      Plans work as a tree of nodes, from a Vision down to Tasks and their Git
+      references, through the web client. Creates a node or a chain of parent
+      and child nodes, links nodes, adds dependencies, edits and deletes nodes,
+      moves Tasks between status columns, and watches changes arrive live.
+    '''
+  }
+
+  apiClients = external "API clients" {
+    description '''
+      Programs that call the Nodoplex API over HTTP and JSON, e.g. `curl` and
+      the Bruno collection in `bruno/`. A client reads node changes by polling
+      `GET /namespaces/{namespace}/changes` or by subscribing to
+      `GET /namespaces/{namespace}/subscribe` (server-sent events).
+    '''
+  }
+
+  // ── Nodoplex ─────────────────────────────────────────────
+
+  nodoplex = system "Nodoplex" {
+    description '''
+      Stores project work as a graph of nodes (Vision, Goal, Feature,
+      Requirement, Task, GitRef) in Neo4j, each in exactly one namespace.
+      Records every node change in a changelog and streams it to subscribers.
+    '''
+
+    web = webapp "Nodoplex web" {
+      technology "React 19, TypeScript, Vite, React Flow"
+      description '''
+        The single-page app in the `nodoplex-web` repository. Runs in the
+        browser and calls the API at `VITE_API_URL` (default
+        `http://localhost:8080`), always in the one namespace
+        `VITE_NODOPLEX_NAMESPACE` (default `default`). Pages: graph, table,
+        Kanban, activity.
+      '''
+
+      shell = component "App shell" {
+        technology "React Router"
+        description '''
+          `src/App.tsx`, `src/components/Layout/AppShell.tsx`, `Sidebar.tsx`,
+          `AppContext.ts`. Routes `/`, `/table`, `/kanban`, and `/activity`.
+          Holds `refreshKey`, which the pages refetch on after a change, and
+          opens the create node dialog.
+        '''
+      }
+
+      graphView = component "Graph view" {
+        technology "@xyflow/react, dagre"
+        description '''
+          `src/components/GraphView/`. Loads every node and each node's
+          children, or one node's subtree and lineage, and lays them out as a
+          graph. Dragging from one node to another creates the
+          parent-to-child edge for the source's type.
+        '''
+      }
+
+      tableView = component "Node table" {
+        description '''
+          `src/components/NodeTable/NodeTable.tsx`. Lists nodes a page at a time, filtered by type and a search string.
+        '''
+      }
+
+      kanban = component "Kanban board" {
+        technology "@dnd-kit"
+        description '''
+          `src/components/KanbanView/`. Shows Tasks in columns by status, with
+          each Task's parent title. Dropping a Task in another column patches
+          its `status`.
+        '''
+      }
+
+      detailPanel = component "Detail panel" {
+        description '''
+          `src/components/Layout/DetailPanel.tsx`. Shows a node with its
+          lineage, dependencies, and dependents. Edits the node, deletes it,
+          removes edges, and opens the link node dialog.
+        '''
+      }
+
+      createDialog = component "Create node dialog" {
+        technology "Radix Dialog"
+        description '''
+          `src/components/NodeForm/CreateNodeDialog.tsx`. Builds a chain of
+          nodes, each a valid child type of the one before. Creates the nodes
+          one at a time, then the `BREAKS_DOWN_TO` or `IMPLEMENTED_BY` edge
+          between each consecutive pair.
+        '''
+      }
+
+      linkDialog = component "Link node dialog" {
+        technology "Radix Dialog"
+        description '''
+          `src/components/NodeForm/LinkNodeDialog.tsx`. Searches for a target
+          node (only nodes of the source's type for `DEPENDS_ON`) and creates a
+          `BREAKS_DOWN_TO`, `IMPLEMENTED_BY`, or `DEPENDS_ON` edge in either
+          direction. Shows a dependency-cycle message on a 409.
+        '''
+      }
+
+      activityFeed = component "Activity feed" {
+        technology "EventSource"
+        description '''
+          `src/components/ActivityFeed/ActivityFeed.tsx` and
+          `src/hooks/useSSE.ts`. When the user turns the live feed on, opens an
+          `EventSource` on `/namespaces/{namespace}/subscribe`, optionally
+          filtered by node type, and lists the latest 100 `node.created`,
+          `node.updated`, and `node.deleted` events. Also polls
+          `/namespaces/{namespace}/changes` for one node type from a given
+          `changeId`.
+        '''
+      }
+
+      apiClient = component "API client" {
+        technology "openapi-fetch, openapi-typescript"
+        description '''
+          `src/api/client.ts`. A typed client for the paths in
+          `src/api/schema.d.ts`, which `npm run generate` builds from
+          `src/api/openapi.yaml`, a copy of the Nodoplex OpenAPI spec. Exports
+          the namespace and the child type allowed under each node type.
+        '''
+      }
+    }
+
+    api = container "Nodoplex API" {
+      technology "Go, net/http, oapi-codegen"
+      description '''
+        `cmd/server/main.go`. Serves the OpenAPI 3.0.3 API in
+        `api/openapi.yaml` on `PORT` (default 8080). Every path except
+        `/health` starts with `/namespaces/{namespace}/`. Stores nodes and
+        edges in Neo4j, appends each node change to the PostgreSQL changelog,
+        and sends it to the server-sent events subscribers connected to the
+        same process. Checks no credentials, and allows every origin (CORS).
+      '''
+
+      router = component "Router and middleware" {
+        technology "net/http ServeMux, oapi-codegen std-http-server"
+        description '''
+          `cmd/server/main.go` (`withCORS`, `withLogging`, `withRecovery`) and
+          `internal/api/handlers.go` (`NewRouter`, `validateNamespace`).
+          `internal/api/generated.go`, generated from `api/openapi.yaml` by
+          `make generate`, parses path and query parameters and calls the
+          handler. Answers 400 for a path without a namespace or with a
+          namespace outside the allowlist (1 to 256 ASCII letters, digits,
+          `-`, `_`, `:`, `.`, with no `.` at either end).
+        '''
+      }
+
+      nodeHandlers = component "Node and edge handlers" {
+        technology "Go"
+        description '''
+          `internal/api/handlers.go` (`CreateNode` to `GetLineage`) and
+          `internal/api/convert.go`. Decodes requests, converts between API and
+          graph types, and maps errors to 400, 404, or 409. After a node is
+          created, updated, or deleted, `publishChange` appends the change to
+          the changelog and then publishes it on the event bus. Edge changes
+          write no changelog entry and publish no event.
+        '''
+      }
+
+      changefeed = component "Changefeed handlers" {
+        technology "Go, server-sent events"
+        description '''
+          `internal/api/handlers.go`, `ListChanges` and `Subscribe`.
+          `ListChanges` reads changelog entries of one node type after a
+          `since` change id. `Subscribe` registers on the event bus and writes
+          each change as `id: <changeId>`, `event: node.<action>`, and
+          `data: <JSON>`, with a `: keepalive` comment every 30s. It ignores
+          `Last-Event-ID`, so it sends only changes published while the client
+          is connected.
+        '''
+      }
+
+      graphService = component "Graph service" {
+        technology "Go"
+        description '''
+          `internal/graph/service.go` and `models.go`. Validates the namespace
+          and node type, and generates a node's UUID. For an edge, checks the
+          edge type and that the source and target types form an allowed pair
+          (`AllowedEdges`): `BREAKS_DOWN_TO` down the tree, `IMPLEMENTED_BY`
+          from Task to GitRef, `DEPENDS_ON` between 2 nodes of the same type.
+          Refuses a node that depends on itself.
+        '''
+      }
+
+      repository = component "Graph repository" {
+        technology "neo4j-go-driver v6, Cypher"
+        description '''
+          `internal/graph/repository.go`. Runs every Cypher query, matching
+          nodes on both id and namespace with `USING INDEX SEEK` hints.
+          `CreateDependency` takes the namespace's `DependencyLock`, checks for
+          an existing edge and for a `DEPENDS_ON` path back from target to
+          source, and creates the edge, all in one transaction.
+        '''
+      }
+
+      changelogStore = component "Changelog store" {
+        technology "pgx v5"
+        description '''
+          `internal/changelog/store.go`. `Append` inserts a change and returns its `change_id`; `ListSince` reads a namespace's changes of one node type after a change id.
+        '''
+      }
+
+      eventBus = component "Event bus" {
+        technology "Go channels"
+        description '''
+          `internal/events/bus.go`. In-memory publish and subscribe inside one
+          API process. Each subscriber has a namespace, an optional set of node
+          types, and a channel that buffers 64 events. `Publish` drops an event
+          for a subscriber whose buffer is full.
+        '''
+      }
+
+      migrations = component "Startup migrations" {
+        technology "Go"
+        description '''
+          `internal/db/neo4j.go` and `internal/changelog/migrations.go`, run by
+          `cmd/server/main.go` on every start. Create the Neo4j constraints and
+          the `(:Node).namespace` index, and the `changelog` table and indexes.
+          With `-assign-namespace=<ns>`, move nodes and changelog entries that
+          have no namespace into `<ns>` and exit.
+        '''
+      }
+    }
+
+    neo4j = store "Graph database" {
+      technology "Neo4j (Bolt)"
+      description '''
+        Stores nodes and edges. Each node carries the `:Node` label, a type
+        label, and a `namespace` property. No edge connects 2 namespaces.
+        Besides the tree edges in this view, a `DEPENDS_ON` edge from node B
+        to node A of the same type means B depends on A, and no cycle of
+        `DEPENDS_ON` edges can form.
+      '''
+
+      vision = nodeType "Vision" {
+        description '''
+          Fields: `title`, `description`. Breaks down to Goals.
+        '''
+      }
+      goal = nodeType "Goal" {
+        description '''
+          Fields: `title`, `description`, `targetDate`. Breaks down to Features.
+        '''
+      }
+      feature = nodeType "Feature" {
+        description '''
+          Fields: `title`, `description`, `priority`. Breaks down to Requirements.
+        '''
+      }
+      requirement = nodeType "Requirement" {
+        description '''
+          Fields: `title`, `description`, `acceptanceCriteria`. Breaks down to Tasks.
+        '''
+      }
+      task = nodeType "Task" {
+        description '''
+          Fields: `title`, `description`, `status` (`backlog`, `in_progress`, `done`, `blocked`). Implemented by GitRefs.
+        '''
+      }
+      gitRef = nodeType "GitRef" {
+        description '''
+          Fields: `repo`, `refType` (`commit` or `branch`), `ref`, `url`, `message`. A child of a Task. The planned Output node replaces it.
+        '''
+      }
+      output = nodeType "Output" {
+        #planned
+        description '''
+          Planned, not in the code. Replaces GitRef as a child of a Task, and
+          holds one work product of any type, in Git or outside it.
+          Fields: `outputType` (e.g. `git`, `slack`; the name avoids `type`,
+          which holds the node type), `description`, `payload` (data in the
+          format of the Output type).
+        '''
+      }
+      dependencyLock = nodeType "DependencyLock" {
+        description '''
+          One node per namespace, keyed by `namespace`. `CreateDependency`
+          writes to it first, so Neo4j's write lock on it makes dependency
+          creations in one namespace run one at a time.
+        '''
+      }
+    }
+
+    postgres = store "Changelog database" {
+      technology "PostgreSQL 18"
+      description '''
+        The append-only `changelog` table: `change_id` (BIGSERIAL, one
+        sequence for all namespaces), `namespace`, `action`, `node_type`,
+        `node_id`, `node` and `previous` (JSONB), `timestamp`.
+      '''
+    }
+  }
+
+  // ── Relationships ────────────────────────────────────────
+
+  user -> nodoplex.web "plans and browses work"
+  apiClients -> nodoplex.api.router "creates, reads, updates, and deletes nodes and edges; polls changes; subscribes to changes" {
+    technology "HTTP, JSON, server-sent events"
+  }
+
+  // Web client
+  user -> nodoplex.web.shell "opens a page, opens the create node dialog"
+  user -> nodoplex.web.graphView "browses the graph, drags an edge between 2 nodes"
+  user -> nodoplex.web.tableView "lists and searches nodes"
+  user -> nodoplex.web.kanban "moves Tasks between status columns"
+  user -> nodoplex.web.detailPanel "views, edits, and deletes a node and its edges"
+  user -> nodoplex.web.createDialog "creates a chain of nodes"
+  user -> nodoplex.web.linkDialog "links 2 nodes or adds a dependency"
+  user -> nodoplex.web.activityFeed "watches live changes, polls past changes"
+
+  nodoplex.web.shell -> nodoplex.web.createDialog "opens"
+  nodoplex.web.detailPanel -> nodoplex.web.linkDialog "opens"
+  nodoplex.web.graphView -> nodoplex.web.apiClient "lists nodes, children, subtree, lineage; creates edges"
+  nodoplex.web.tableView -> nodoplex.web.apiClient "lists nodes"
+  nodoplex.web.kanban -> nodoplex.web.apiClient "lists Tasks and their parents, patches status"
+  nodoplex.web.detailPanel -> nodoplex.web.apiClient "reads a node, lineage, dependencies, dependents; patches and deletes nodes; deletes edges"
+  nodoplex.web.createDialog -> nodoplex.web.apiClient "creates nodes, then edges"
+  nodoplex.web.linkDialog -> nodoplex.web.apiClient "searches nodes, creates an edge"
+  nodoplex.web.activityFeed -> nodoplex.web.apiClient "polls changes"
+  nodoplex.web.apiClient -> nodoplex.api.router "calls /namespaces/{namespace}/..." {
+    technology "HTTP, JSON"
+  }
+  nodoplex.web.activityFeed -> nodoplex.api.router "subscribes with EventSource" {
+    technology "server-sent events"
+  }
+
+  // API
+  nodoplex.api.router -> nodoplex.api.nodeHandlers "routes node, edge, and traversal requests"
+  nodoplex.api.router -> nodoplex.api.changefeed "routes /changes and /subscribe"
+  nodoplex.api.nodeHandlers -> nodoplex.api.graphService "creates, reads, updates, deletes nodes and edges; traverses"
+  nodoplex.api.nodeHandlers -> nodoplex.api.changelogStore "appends each node change"
+  nodoplex.api.nodeHandlers -> nodoplex.api.eventBus "publishes each node change with its change id"
+  nodoplex.api.changefeed -> nodoplex.api.changelogStore "lists changes since a change id"
+  nodoplex.api.changefeed -> nodoplex.api.eventBus "subscribes for the namespace and node types"
+  nodoplex.api.eventBus -> nodoplex.api.changefeed "delivers matching changes"
+  nodoplex.api.changefeed -> nodoplex.web.activityFeed "writes node.created, node.updated, node.deleted events" {
+    technology "server-sent events"
+  }
+  nodoplex.api.changefeed -> apiClients "writes node change events" {
+    technology "server-sent events"
+  }
+  nodoplex.api.graphService -> nodoplex.api.repository "runs the namespaced queries"
+  nodoplex.api.repository -> nodoplex.neo4j "reads and writes nodes and edges, takes the dependency lock" {
+    technology "Bolt, Cypher"
+  }
+  nodoplex.api.changelogStore -> nodoplex.postgres "inserts and selects changelog rows" {
+    technology "SQL"
+  }
+  nodoplex.api.migrations -> nodoplex.neo4j "creates constraints and indexes, assigns namespaces" {
+    technology "Bolt, Cypher"
+  }
+  nodoplex.api.migrations -> nodoplex.postgres "creates the changelog table, assigns namespaces" {
+    technology "SQL"
+  }
+
+  // Graph schema: edges between node types
+  nodoplex.neo4j.vision -> nodoplex.neo4j.goal "BREAKS_DOWN_TO"
+  nodoplex.neo4j.goal -> nodoplex.neo4j.feature "BREAKS_DOWN_TO"
+  nodoplex.neo4j.feature -> nodoplex.neo4j.requirement "BREAKS_DOWN_TO"
+  nodoplex.neo4j.requirement -> nodoplex.neo4j.task "BREAKS_DOWN_TO"
+  nodoplex.neo4j.task -> nodoplex.neo4j.gitRef "IMPLEMENTED_BY"
+  nodoplex.neo4j.task -> nodoplex.neo4j.output "parent of (planned; the proposal names no edge type)" {
+    #planned
+  }
+}
