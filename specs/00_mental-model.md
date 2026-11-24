@@ -30,12 +30,14 @@ Nodoplex stores the work as nodes, connected by edges. The nodes and the edges f
   - **Feature**: a capability of the product
   - **Requirement**: a condition that a Feature must meet
   - **Task**: a unit of work that must be done to fulfil a Requirement
-  - **Output**: a result of the work on a Task (e.g. a Git branch, a Slack message)
-- The types form this hierarchy, from the top:
+  - **Output**: a result of the work on a node of any other type (e.g. a Git branch, a Slack message)
+- The types other than Output form this hierarchy, from the top:
 
   ```
-  Vision -> Goal -> Feature -> Requirement -> Task -> Output
+  Vision -> Goal -> Feature -> Requirement -> Task
   ```
+
+- An Output is below each of those types
 
 - Every node except an Output must have a title. An Output can have a title. Every node can have a description
 - Some types can have more fields:
@@ -53,7 +55,7 @@ Nodoplex stores the work as nodes, connected by edges. The nodes and the edges f
 ## Edges
 
 - An **edge** connects two nodes in the same namespace. Each edge is one of these kinds:
-  - a **hierarchical edge**, which connects a node to one of its **parents**. A parent has the type directly above the type of its child in the hierarchy (e.g. Vision, for a Goal)
+  - a **hierarchical edge**, which connects a node to one of its **parents**. A parent has the type directly above the type of its child in the hierarchy (e.g. Vision, for a Goal). A parent of an Output can have any type other than Output (e.g. Goal, for a change to a README file)
   - a **dependency edge**, which connects a node to a node of the same type that it **depends on**. The two nodes can have different parents. For example, a Task can depend on a Task of another Requirement, and a Vision can depend on another Vision
 - Two nodes have at most one edge between them
 - A node can have more than one parent (e.g. a Goal with two Vision nodes as parents). A Vision has no parent. Every node of any other type has at least one parent. When a client creates such a node, the client must give at least one parent. Nodoplex creates a hierarchical edge to each parent that the client gives

@@ -48,14 +48,14 @@ A node of any type is allowed to carry these fields:
 
 A `NodeType` is a string that is one of the values in the `type` column of the table below. A node is allowed to carry a field of the Other fields column only if the table gives it for the type of the node:
 
-| `type`        | Parent type   | Other fields                                     |
-| ------------- | ------------- | ------------------------------------------------ |
-| `vision`      | none          | `title` (required)                               |
-| `goal`        | `vision`      | `title` (required), `targetDate`                 |
-| `feature`     | `goal`        | `title` (required), `priority`                   |
-| `requirement` | `feature`     | `title` (required), `acceptanceCriteria`         |
-| `task`        | `requirement` | `title` (required), `status` (required)          |
-| `output`      | `task`        | `title`, `outputType` (required), `payload`      |
+| `type`        | Parent types                  | Other fields                                |
+| ------------- | ----------------------------- | ------------------------------------------- |
+| `vision`      | none                          | `title` (required)                          |
+| `goal`        | `vision`                      | `title` (required), `targetDate`            |
+| `feature`     | `goal`                        | `title` (required), `priority`              |
+| `requirement` | `feature`                     | `title` (required), `acceptanceCriteria`    |
+| `task`        | `requirement`                 | `title` (required), `status` (required)     |
+| `output`      | each type other than `output` | `title`, `outputType` (required), `payload` |
 
 | Field                | Schema type  | Comments                              |
 | -------------------- | ------------ | ------------------------------------- |
@@ -181,7 +181,7 @@ T1. The server must return each value of `payload` as the same value as the `pay
 
 G1. A namespace must not hold two edges with the same type, the same source, and the same target.
 
-P1. The target of a hierarchical edge must have the parent type that the Node schema gives for the type of its source.
+P1. The target of a hierarchical edge must have one of the parent types that the Node schema gives for the type of its source.
 
 P2. Each node whose type is not `vision` must be the source of at least one hierarchical edge.
 
@@ -305,7 +305,7 @@ Steps:
 3. If the value of `type` is not `vision`, and the value of `parentIds` is empty, refuse with `invalid_request`
 4. For each `id` in the value of `parentIds`:
    1. If no node in the namespace has that `id`, refuse with `invalid_reference`
-   2. If the type of that node is not the parent type of the value of `type`, refuse with `invalid_reference`
+   2. If the type of that node is not one of the parent types of the value of `type`, refuse with `invalid_reference`
 5. Atomically:
    1. Create a node in the namespace with a new `id`, and with each field of the input other than `parentIds`
    2. Record a change with the action `created` for the node

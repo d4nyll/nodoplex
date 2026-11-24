@@ -16,6 +16,7 @@ The Ergos mental model is `specs/00_mental-model.md` in the ergos repository. Li
 - A namespace holds each edge at most one time (R1)
 - Like the code at `72c93ef`, the documents let a node have more than one parent. `GetAncestors` and `GetDescendants` replace `GetLineage` and `GetSubtree`. Each returns each node one time, with the hierarchical edges between the nodes (R2, R3)
 - Every node except a Vision has at least one parent (R4)
+- A parent of an Output can have any type other than Output (R5)
 - When a client deletes a node, the server also deletes its edges, and each descendant whose parents are all deleted (R6)
 - Each change to a node or to an edge has its own change entry (R6, R21)
 - The change IDs of each namespace start at 1 and increase by 1, in the order in which the changes take effect. The changes of an operation and their change entries are atomic (R22 to R25)
@@ -57,6 +58,8 @@ The Ergos mental model is `specs/00_mental-model.md` in the ergos repository. Li
 ### R5. Two edge types have the same meaning
 
 - Status quo: `BREAKS_DOWN_TO` and `IMPLEMENTED_BY` both mean "is the parent of". Which one applies depends on the type of the child ([models.go:106-115](https://github.com/d4nyll/nodoplex/blob/72c93ef3fe2e271585fdbf3858b81feb184ae329/internal/graph/models.go#L106-L115)). `IMPLEMENTED_BY` connects a Task to an Output. An Output can describe a Slack message, which does not implement a Task. `DELETE .../edges` accepts a JSON body ([openapi.yaml:179-194](https://github.com/d4nyll/nodoplex/blob/72c93ef3fe2e271585fdbf3858b81feb184ae329/api/openapi.yaml#L179-L194)), and RFC 9110 gives a body in a `DELETE` request no defined meaning
+- Decision: an Output records a result of the work on a node of any type other than Output (e.g. a change to a README file, for a Goal)
+- In the documents: a parent of an Output can have any type other than Output (base: Node schema, P1)
 - In the documents: one edge type, `hierarchical`, replaces `BREAKS_DOWN_TO` and `IMPLEMENTED_BY` (base: Edge schema). `DeleteEdge` takes the edge in its path, with no body (extended: Operations)
 
 ### R6. `DeleteNode` removes edges and records nothing about them
