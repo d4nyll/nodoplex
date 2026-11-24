@@ -55,17 +55,18 @@ A `NodeType` is a string that is one of the values in the `type` column of the t
 | `feature`     | `goal`                        | `title` (required), `priority`              |
 | `requirement` | `feature`                     | `title` (required), `acceptanceCriteria`    |
 | `task`        | `requirement`                 | `title` (required), `status` (required)     |
+| `subtask`     | `task`                        | `title` (required), `status` (required)     |
 | `output`      | each type other than `output` | `title`, `outputType` (required), `payload` |
 
-| Field                | Schema type  | Comments                              |
-| -------------------- | ------------ | ------------------------------------- |
-| `title`              | string       | at least 1 character                  |
-| `targetDate`         | date         |                                       |
-| `priority`           | integer      | a lower value means a higher priority |
-| `acceptanceCriteria` | string       |                                       |
-| `status`             | `TaskStatus` | the progress of the work on the Task  |
-| `outputType`         | string       | at least 1 character                  |
-| `payload`            | object       |                                       |
+| Field                | Schema type  | Comments                                        |
+| -------------------- | ------------ | ----------------------------------------------- |
+| `title`              | string       | at least 1 character                            |
+| `targetDate`         | date         |                                                 |
+| `priority`           | integer      | a lower value means a higher priority           |
+| `acceptanceCriteria` | string       |                                                 |
+| `status`             | `TaskStatus` | the progress of the work on the Task or SubTask |
+| `outputType`         | string       | at least 1 character                            |
+| `payload`            | object       |                                                 |
 
 A `TaskStatus` is a string that is one of these values:
 
@@ -350,7 +351,7 @@ Steps:
 3. If the value of `search` has at least 1 character:
    1. Compute the Unicode simple case folding of the value of `search`, and of each value of `title` and `description`
    2. Keep only the nodes in which the folded value of `title` or of `description` contains the folded value of `search`
-4. If the input has `status`, keep only the Tasks whose value of `status` is the value in the input
+4. If the input has `status`, keep only the Tasks and SubTasks whose value of `status` is the value in the input
 5. Sort the selected nodes in id order
 6. Skip as many nodes as the value of `offset`, from the start of that order. After them, keep at most as many nodes as the value of `limit`
 7. Return a `NodeList`. Its field `nodes` holds the nodes that step 6 kept. Its field `total` holds the number of nodes that step 5 sorted

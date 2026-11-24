@@ -30,11 +30,12 @@ Nodoplex stores the work as nodes, connected by edges. The nodes and the edges f
   - **Feature**: a capability of the product
   - **Requirement**: a condition that a Feature must meet
   - **Task**: a unit of work that must be done to fulfil a Requirement
+  - **SubTask**: a part of a Task that can be done on its own
   - **Output**: a result of the work on a node of any other type (e.g. a Git branch, a Slack message)
 - The types other than Output form this hierarchy, from the top:
 
   ```
-  Vision -> Goal -> Feature -> Requirement -> Task
+  Vision -> Goal -> Feature -> Requirement -> Task -> SubTask
   ```
 
 - An Output is below each of those types
@@ -44,7 +45,7 @@ Nodoplex stores the work as nodes, connected by edges. The nodes and the edges f
   - Goal: a target date
   - Feature: a priority. A lower number means a higher priority
   - Requirement: acceptance criteria
-  - Task: a **status**, which every Task must have, and which records the progress of the work on the Task. The status is one of these:
+  - Task and SubTask: a **status**, which every Task and every SubTask must have, and which records the progress of the work on the Task or SubTask. The status is one of these:
     - backlog
     - in progress
     - done

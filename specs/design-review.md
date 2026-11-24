@@ -113,7 +113,8 @@ The Ergos mental model is `specs/00_mental-model.md` in the ergos repository. Li
 
 - Status quo: in `api/openapi.yaml`, only Tasks have a `status` ([openapi.yaml:446-448](https://github.com/d4nyll/nodoplex/blob/72c93ef3fe2e271585fdbf3858b81feb184ae329/api/openapi.yaml#L446-L448), [openapi.yaml:536-551](https://github.com/d4nyll/nodoplex/blob/72c93ef3fe2e271585fdbf3858b81feb184ae329/api/openapi.yaml#L536-L551)). In Ergos, "[e]very node except an Output node has exactly one Lockstep stream, in which the work on that node is coordinated" ([00_mental-model.md:68](https://github.com/d4nyll/ergos/blob/ba18a2df4570ce18d3119c953496ef65e19f8988/specs/00_mental-model.md?plain=1#L68)). "A stream is live until it is terminated" ([00_mental-model.md:78](https://github.com/d4nyll/ergos/blob/ba18a2df4570ce18d3119c953496ef65e19f8988/specs/00_mental-model.md?plain=1#L78)). The `status` of a Task in Nodoplex can differ from the state of the stream of that Task in Ergos.
 - Decision: Tasks keep `status`, so that a client can read the progress of a Task
-- In the documents: every Task has a `status`, whose value is one of `backlog`, `in_progress`, `done`, and `blocked` (base: Node schema). If the request gives a `status`, `ListNodes` returns only the Tasks whose `status` has that value (base: `ListNodes` step 4)
+- Decision: SubTasks have `status` too, because a SubTask is a unit of work like a Task
+- In the documents: every Task and SubTask has a `status`, whose value is one of `backlog`, `in_progress`, `done`, and `blocked` (base: Node schema). If the request gives a `status`, `ListNodes` returns only the Tasks and SubTasks whose `status` has that value (base: `ListNodes` step 4)
 
 ### R13. A node has no version
 
