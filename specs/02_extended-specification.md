@@ -174,6 +174,16 @@ F7. If the client closes the connection of a `Subscribe` request, the server mus
 
 ## Storage
 
-B1. The server must keep the nodes, the edges, and the change entries in one database.
+B1. The server must keep the nodes and the edges in Neo4j, and the latest change ID of each namespace in Neo4j.
 
-B2. The server must write the changes of an operation and its change entries in one transaction of that database.
+B2. The server must write the changes of an operation, the change entries that it appends, and the new latest change ID of the namespace in one Neo4j transaction.
+
+B3. The server must copy each change entry from Neo4j to PostgreSQL. In each namespace, the server must copy the change entries in ascending order of `changeId`.
+
+B4. PostgreSQL must hold each change entry at most one time.
+
+B5. After the PostgreSQL transaction that holds the copy of a change entry commits, the server is allowed to delete that change entry from Neo4j.
+
+B6. `ListChanges`, and each run of steps 6 and 7 of `Subscribe`, must read the change entries from PostgreSQL.
+
+B7. Before a read that B6 gives starts, the server must wait until PostgreSQL holds each change entry of the namespace whose `changeId` is at most the latest change ID in Neo4j.
