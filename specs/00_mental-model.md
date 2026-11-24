@@ -8,7 +8,7 @@ Nodoplex is a server that tracks the work on a product. It stores:
 - the progress of that work
 - the record of the work after it is done
 
-Nodoplex stores the work as nodes, connected by edges. The nodes and the edges form a directed acyclic graph (DAG). A client can read and write the nodes and the edges. Nodoplex records each change in a changefeed. A client can subscribe to the changefeed, and then Nodoplex sends the client each change entry.
+Nodoplex stores the work as nodes, connected by edges. The nodes and the edges form a directed acyclic graph (DAG). A client can read and write the nodes and the edges. Nodoplex records each change as a change entry in a changefeed (see The changefeed). A client can subscribe to the changefeed, and then Nodoplex sends the client each change entry.
 
 ## Namespaces
 
@@ -23,7 +23,7 @@ Nodoplex stores the work as nodes, connected by edges. The nodes and the edges f
 - Each node has:
   - an **ID** (server-generated)
   - a **type**, which is immutable
-  - fields that describe the work, which vary with the type
+  - fields that describe the work. These fields depend on the type
 - These are the types:
   - **Vision**: a purpose of the product
   - **Goal**: an outcome that the product must achieve
@@ -38,19 +38,18 @@ Nodoplex stores the work as nodes, connected by edges. The nodes and the edges f
   Vision -> Goal -> Feature -> Requirement -> Task -> SubTask
   ```
 
-- An Output is below each of those types
-
+- Output is below every type in that hierarchy
 - Every node except an Output must have a title. An Output can have a title. Every node can have a description
 - Some types can have more fields:
   - Goal: a target date
   - Feature: a priority. A lower number means a higher priority
   - Requirement: acceptance criteria
-  - Task and SubTask: a **status**, which every Task and every SubTask must have, and which records the progress of the work on the Task or SubTask. The status is one of these:
+  - Task and SubTask: a **status**, which records the progress of the work on the Task or SubTask. Every Task and every SubTask must have a status. The status is one of these:
     - backlog
     - in progress
     - done
     - blocked
-  - Output: an **output type**, which every Output must have, and a **payload**
+  - Output: an **output type** and a **payload**. Every Output must have an output type
 - The output type is a name that a client can choose (e.g. `git`, `slack`). The payload is opaque to Nodoplex. Nodoplex stores the payload and returns it unchanged
 
 ## Edges
@@ -59,7 +58,7 @@ Nodoplex stores the work as nodes, connected by edges. The nodes and the edges f
   - a **hierarchical edge**, which connects a node to one of its **parents**. A parent has the type directly above the type of its child in the hierarchy (e.g. Vision, for a Goal). A parent of an Output can have any type other than Output (e.g. Goal, for a change to a README file)
   - a **dependency edge**, which connects a node to a node of the same type that it **depends on**. The two nodes can have different parents. For example, a Task can depend on a Task of another Requirement, and a Vision can depend on another Vision
 - Two nodes have at most one edge between them
-- A node can have more than one parent (e.g. a Goal with two Vision nodes as parents). A Vision has no parent. Every node of any other type has at least one parent. When a client creates such a node, the client must give at least one parent. Nodoplex creates a hierarchical edge to each parent that the client gives
+- A node can have more than one parent (e.g. a Goal with two Visions as parents). A Vision has no parent. Every node of any other type has at least one parent. When a client creates such a node, the client must give at least one parent. Nodoplex creates a hierarchical edge to each parent that the client gives
 - Nodoplex refuses a request to delete the edge that connects a node to its only parent
 - When a client deletes a node, Nodoplex also deletes:
   - each edge of the node, in either direction (e.g. a dependency edge from another node to the node)
@@ -74,21 +73,21 @@ Nodoplex stores the work as nodes, connected by edges. The nodes and the edges f
   - the deletion of a node
   - the creation of an edge
   - the deletion of an edge
-- Each change entry holds the kind of change (creation, update, or deletion) and the time of the change
+- Each change entry holds the kind of change (i.e. creation, update, or deletion) and the time of the change
 - A change entry of a node also holds the node before and after the change. A change entry of the creation of a node has no node before the change. A change entry of the deletion of a node has no node after the change
 - A change entry of an edge also holds the edge
 - When a client deletes a node, Nodoplex produces one change entry for each node and each edge that it deletes
 - Each change entry has a **change ID**. In each namespace, change IDs start at 1 and increase by 1, in the order in which the changes occur
 - Each node holds the change ID of its latest change entry. This change ID identifies one version of the node. A change to an edge of the node leaves this change ID as it was
-- When a client updates a node, the client must give the change ID of the version of the node that it last read. If the node has another change ID, Nodoplex refuses the update. Thus a retry of an update that changed the node gets a refusal, and no update overwrites a change that the client did not read
+- When a client updates a node, the client must give the change ID of the version of the node that the client last read. If the node has another change ID, Nodoplex refuses the update. Thus a retry of an update that changed the node gets a refusal, and no update overwrites a change that the client did not read
 - The **changefeed** of a namespace is the sequence of all its change entries. Nodoplex keeps every change entry
 
 ## How a client reads the changefeed
 
 - A client can read the changefeed in one of these ways:
-  - **poll**: the client asks for the change entries after a change ID
-  - **subscribe**: the client opens a subscription. Nodoplex sends the client each change entry after a **start change ID**. Then, each time a change occurs, Nodoplex sends its change entry
-- If the client gives a change ID when it subscribes, the start change ID is that change ID. Otherwise, the start change ID is the latest change ID of the namespace: its highest change ID, or 0 if it has no change entry
+  - **poll**: the client gives a change ID, and asks for the change entries whose change IDs are greater than that change ID
+  - **subscribe**: the client opens a subscription. Nodoplex sends the client each change entry whose change ID is greater than a **start change ID**. Then, each time a change occurs, Nodoplex sends the change entry of that change
+- If the client gives a change ID when it subscribes, the start change ID is that change ID. Otherwise, the start change ID is the highest change ID of the namespace, or 0 if the namespace has no change entry
 - When a client opens a subscription, Nodoplex first sends the start change ID, with no change entry. Then Nodoplex sends the change entries
 - In both ways, the client gets the change entries in ascending order of change ID
 - If a client names node types, the client gets only these change entries:
