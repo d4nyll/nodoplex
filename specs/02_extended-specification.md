@@ -32,7 +32,8 @@ The server must serve each operation at the method and the path that the table b
 | `UpdateNode`      | `PATCH /namespaces/{namespace}/nodes/{id}`                           | status 200 and the `Node`                                                     |
 | `DeleteNode`      | `DELETE /namespaces/{namespace}/nodes/{id}`                          | status 204 and no body                                                        |
 | `CreateEdge`      | `POST /namespaces/{namespace}/edges`                                 | status 201 and the `Edge` after step 7, or status 200 and the `Edge` from step 5 |
-| `DeleteEdge`      | `DELETE /namespaces/{namespace}/edges/{type}/{sourceId}/{targetId}`  | status 204 and no body                                                        |
+| `GetEdge`         | `GET /namespaces/{namespace}/edges/{type}/{tailId}/{headId}`     | status 200 and the `Edge`                                                     |
+| `DeleteEdge`      | `DELETE /namespaces/{namespace}/edges/{type}/{tailId}/{headId}`  | status 204 and no body                                                        |
 | `GetParents`      | `GET /namespaces/{namespace}/nodes/{id}/parents`                     | status 200 and a `NodeArray`                                                  |
 | `GetChildren`     | `GET /namespaces/{namespace}/nodes/{id}/children`                    | status 200 and a `NodeArray`                                                  |
 | `GetAncestors`    | `GET /namespaces/{namespace}/nodes/{id}/ancestors`                   | status 200 and a `Subgraph`                                                   |
@@ -41,6 +42,8 @@ The server must serve each operation at the method and the path that the table b
 | `GetDependents`   | `GET /namespaces/{namespace}/nodes/{id}/dependents`                  | status 200 and a `NodeArray`                                                  |
 | `ListChanges`     | `GET /namespaces/{namespace}/changes`                                | status 200 and a `ChangeList`                                                 |
 | `Subscribe`       | `GET /namespaces/{namespace}/subscribe`                              | status 200 and an event stream (see [Event stream](#event-stream))            |
+| `GetNamespace`         | `GET /namespaces/{namespace}`                                   | status 200 and a `Namespace`                                                  |
+| `SetExposeChangefeed`  | `PATCH /namespaces/{namespace}`                                 | status 200 and a `Namespace`                                                  |
 | `GetHealth`       | `GET /health`                                                        | status 200 and a `Health`                                                     |
 
 I1. The server must read the namespace of a request from the path segment after `/namespaces/`.
@@ -67,7 +70,7 @@ The server must make these checks in this order, and must stop at the first chec
    1. If the body or a value in it breaks a size or depth limit of the implementation, refuse with `invalid_request`
    2. If the body is not a JSON object, refuse with `invalid_request`
    3. If an object in the body has the same member name more than one time, refuse with `invalid_request`
-   4. If a member of the body is not a body field of the operation, refuse with `invalid_request`. For this check, the body fields of `CreateNode` and `UpdateNode` are those of every node type
+   4. If a member of the body is not a body field of the operation, refuse with `invalid_request`. For this check, the body fields of `CreateNode` and `UpdateNode` are the body fields that I4 names, plus each field that the Other fields column of the Node schema gives for any node type
 
 After these checks, for an operation of the base specification, the server must make the checks of the base specification before step 1.
 
@@ -107,6 +110,8 @@ The schema types of the base specification have these forms:
 | date        | a string in the form `YYYY-MM-DD` (the `full-date` of RFC 3339)                                                           |
 | timestamp   | a string that holds an RFC 3339 `date-time` in UTC, with the offset written as `Z`                                        |
 | object      | a JSON object                                                                                                              |
+| boolean     | in JSON, `true` or `false`                                                                                                 |
+| any         | in JSON, any JSON value other than `null`                                                                                  |
 | X[]         | in JSON, an array of values of schema type X. In a query, a query parameter that occurs one time for each value           |
 
 In a body, a field with the value `null` is a field with no value.
@@ -119,6 +124,8 @@ Two values of schema type object are the same if they are the same JSON value. T
 - for two nulls: they are always the same
 - for two arrays: they have the same length, and the same values in the same order
 - for two objects: they have the same member names, and the same value for each name
+
+Two values of schema type `any` are the same if they are the same JSON value, by the rules above.
 
 ## Errors
 
@@ -145,17 +152,19 @@ X4. If the server refuses a request before it parses the request line and the he
 | `invalid_reference`   | 409    | as in the base specification                                                                         |
 | `dependency_cycle`    | 409    | as in the base specification                                                                         |
 | `parent_required`     | 409    | as in the base specification                                                                         |
+| `has_children`        | 409    | as in the base specification                                                                         |
 | `change_id_mismatch`  | 409    | as in the base specification                                                                         |
 | `change_out_of_range` | 409    | as in the base specification                                                                         |
+| `changefeed_disabled` | 409    | as in the base specification                                                                         |
 | `internal_error`      | 500    | as in the base specification                                                                         |
 
 ## Event stream
 
 The server must send the output of `Subscribe` as an event stream in the server-sent events format of the HTML Living Standard.
 
-F1. At step 3 of `Subscribe`, the server must send status 200 with the content type `text/event-stream`.
+F1. At step 4 of `Subscribe`, the server must send status 200 with the content type `text/event-stream`.
 
-F2. The server must write the start message as the line `id: ` with the start change ID, and then an empty line.
+F2. The server must not write a message for the start change ID. Each message that holds a change entry has a `changeId` greater than the start change ID.
 
 F3. The server must write each message with a change entry as these lines, in this order:
 
@@ -166,15 +175,34 @@ F3. The server must write each message with a change entry as these lines, in th
 
 F4. If 30 s pass with no line written to an open event stream, the server must write a `: keepalive` line and an empty line.
 
-F5. The stream must hold only the lines that F2, F3, and F4 give.
+F5. The stream must hold only the lines that F3 and F4 give.
 
 F6. If the server cannot continue an event stream, the server must end the response that carries the event stream.
 
 F7. If the client closes the connection of a `Subscribe` request, the server must end the event stream.
 
+## Namespaces
+
+The base specification leaves the valid values of a namespace to this document (base: N1).
+
+V1. A namespace must be from 1 to 256 characters long, both inclusive.
+
+V2. Each character of a namespace must be one of these:
+
+   - an ASCII letter
+   - an ASCII digit
+   - `-`
+   - `_`
+   - `:`
+   - `.`
+
+V3. A namespace must not start or end with `.`.
+
+A namespace that breaks V1, V2, or V3 is not valid.
+
 ## Storage
 
-B1. The server must keep the nodes and the edges in Neo4j, and the latest change ID of each namespace in Neo4j.
+B1. The server must keep the nodes, the edges, the latest change ID of each namespace, and the namespace setting of Expose Changefeed in Neo4j. The server setting of Expose Changefeed is server configuration, by K1 of the base specification.
 
 B2. The server must write the changes of an operation, the change entries that it appends, and the new latest change ID of the namespace in one Neo4j transaction.
 

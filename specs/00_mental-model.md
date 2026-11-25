@@ -121,7 +121,7 @@ One Nodoplex server can serve many products. Each product has its own graph, wit
 - When a client creates a new product, Nodoplex creates:
   - a new graph with a single Product Node
   - a new Changefeed for that product. The first Change Entry in the Changefeed holds the creation of the Product.
-- A client names a Product by its `slug`. Each slug is unique on the Nodoplex server. Nodoplex also refuses to create a Product with the slug of a deleted Product. Nodoplex refuses a slug that isn't valid. Apart from that check, Nodoplex doesn't interpret the characters of a slug. The base specification may define which strings are valid slugs, and the extended specification must define them.
+- A client names a Product by its `slug`. Each slug is unique on the Nodoplex server. Nodoplex also refuses to create a Product with the slug of a deleted Product. Nodoplex refuses a slug that isn't valid. Apart from that check, Nodoplex doesn't interpret the characters of a slug. The extended specification defines which strings are valid slugs.
 - A client can list the Products. That request names no Product.
 - Every other request about Nodes, Edges, or Change Entries names one Product by its slug, and Nodoplex reads and writes only the data of that Product
 - Every Node is in the graph of exactly one Product. If a request names a Node that isn't in the graph of the Product that the request names, Nodoplex answers as if the Node doesn't exist.
@@ -203,7 +203,34 @@ For example, a Task with no SubTasks is a leaf, so a client can set its status. 
     - Nodoplex refuses to set B to `done` until A is `done`
     - While B is `done`, Nodoplex refuses to change the status of A from `done`. To change the status of A, the client can first delete the Dependency Edge from B to A, or set B to `in_progress` or `not_started`.
   - If B doesn't depend on A, B is `done`, and A isn't `done`, Nodoplex refuses to create a Dependency Edge from B to A
-- A write can make a `done` Node that has a derived status blocked (e.g. a change to the status of a Prerequisite, a new Dependency Edge). Nodoplex accepts that write. Atomically with the write, Nodoplex derives the status of the Node again, so the Node stops being `done`. For example, Requirement R has Tasks, so the status of R is derived. R depends on Requirement S. R and S are both `done`, and neither is archived. If a client makes a write that changes S from `done` to `in_progress`, Nodoplex accepts the write, and changes R to `in_progress` atomically with the change to S.
+- A write can make a `done` Node that has a derived status blocked (e.g. a change to the status of a Prerequisite, a new Dependency Edge). Nodoplex doesn't refuse a write for that reason. The rule above for `done` leaves applies to the whole write, including the statuses that Nodoplex derives again because of the write. In each example below, Requirement R has Tasks, so the status of R is derived. S, B, and C are leaves. No Node is archived. A client makes a write that changes S from `done` to `in_progress`. In each diagram, `┄┄┄>` is a Dependency Edge, from a Dependent to its Prerequisite.
+
+  Example 1: Nodoplex accepts the write.
+
+  ```
+  R (derived, done) ┄┄┄> S (leaf, done)
+  ```
+
+  1. R is now blocked, so Nodoplex derives the status of R again: `in_progress`
+  2. No `done` leaf is blocked, so Nodoplex accepts the write. R becomes `in_progress` atomically with the change to S
+
+  Example 2: Nodoplex refuses the write, because the change to S blocks a `done` leaf.
+
+  ```
+  R (derived, done) ┄┄┄> S (leaf, done) <┄┄┄ B (leaf, done)
+  ```
+
+  1. R would become `in_progress`
+  2. B would be `done` and blocked, so Nodoplex refuses the whole write. R, S, and B don't change
+
+  Example 3: Nodoplex refuses the write, because the new derived status blocks a `done` leaf.
+
+  ```
+  C (leaf, done) ┄┄┄> R (derived, done) ┄┄┄> S (leaf, done)
+  ```
+
+  1. R would become `in_progress`
+  2. R is a Prerequisite of C, and R would no longer be `done`, so C would be `done` and blocked. Nodoplex refuses the whole write. C, R, and S don't change
 
 ## Cycles
 
@@ -392,7 +419,7 @@ By default, Nodoplex limits the number and the total size of the Change Entries 
 
 ## Node versions
 
-Nodoplex uses the version to prevent lost updates (i.e. 2 clients silently overwriting each other's changes). When a client updates, archives, unarchives, or deletes a Node, the client sends the version of the Node that the client last read. When a client creates, updates, or deletes an Edge, the client sends the version of the Tail Node that the client last read. If the current version of that Node is higher than the version that the client sends, Nodoplex refuses the write.
+Nodoplex uses the version to prevent lost updates (i.e. 2 clients silently overwriting each other's changes). When a client updates, archives, unarchives, or deletes a Node, the client sends the version of the Node that the client last read. When a client creates, updates, or deletes an Edge, the client sends the version of the Tail Node that the client last read. If the version that the client sends isn't the current version of that Node, Nodoplex refuses the write.
 
 - When a write changes the derived status of a Node, that Node gets a new version.
 - An update that names only untracked Fields doesn't have to send the version. If the client sends a version, Nodoplex checks the version in the same way. If the client sends no version, Nodoplex doesn't check for concurrent writes.
