@@ -1,34 +1,108 @@
 openapi: "3.0.3"
 info:
   title: Nodoplex API
-  description: >
-    Graph-based project management platform. All project entities (visions,
-    goals, features, requirements, tasks, outputs) are stored as nodes in a
-    Neo4j graph connected by directed edges, giving every stakeholder a single
-    shared view of how work connects to company goals.
+  version: "0.4.0"
+  description: |
+    The HTTP API of Nodoplex. The extended specification
+    (`specs/02_extended-specification.md`) gives the full contract. The base
+    specification (`specs/01_base-specification.md`) gives the steps and the
+    rules of each operation.
 
-
-    Every node belongs to exactly one namespace, an opaque string chosen by
-    the caller when the node is created. Every operation is scoped to the
-    namespace in its path: nodes in other namespaces behave exactly like
-    nodes that don't exist, and edges can only connect nodes in the same
-    namespace. Requests to the unprefixed paths (for example `/nodes`) are
-    rejected with 400.
-  version: "0.3.0"
+    - Each request must give the user ID in the header `Nodoplex-User-Id`,
+      percent-encoded. A `Subscribe` request can give it in the query
+      parameter `userId` instead. A health check (`/livez`, `/startupz`,
+      `/readyz`) needs no user ID.
+    - The server reads the body of each `PUT`, `POST`, and `PATCH` request as
+      JSON, whatever its content type, and reads an empty body as `{}`. The
+      server refuses a body member that the operation doesn't name.
+    - In an input, `null` gives no value. The server writes `null` only inside
+      the `payload` of an `Output`.
+    - The server writes each UUID in lowercase, and each timestamp in UTC with
+      6 digits after the decimal point and the offset `Z`
+      (e.g. `2026-11-23T08:15:30.123456Z`).
+    - Each refusal carries the header `Nodoplex-Error-Code` and an `Error` body
+      with the same `code`. A path that matches no operation gets `not_found`
+      (404). A method that the path doesn't serve gets `method_not_allowed`
+      (405).
+    - The server answers a `HEAD` request as the `GET` request with no body, and
+      answers an `OPTIONS` request with status 204 and the CORS headers.
 
 servers:
   - url: http://localhost:8080
     description: Local development
 
 paths:
-  # ── Nodes CRUD ──────────────────────────────────────────────
-  /namespaces/{namespace}/nodes:
+  # ── Products ────────────────────────────────────────────────
+  /products:
     parameters:
-      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/UserIdHeader"
+    get:
+      operationId: ListProducts
+      summary: List the Product Nodes, in code point order of their slugs
+      parameters:
+        - name: archived
+          in: query
+          description: Keep each Product Node whose `archived` is one of these values.
+          schema:
+            type: array
+            minItems: 1
+            default: [false]
+            items:
+              type: boolean
+      responses:
+        "200":
+          description: The Product Nodes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductList"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
+  /products/{slug}:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/UserIdHeader"
+    put:
+      operationId: CreateProduct
+      summary: Create a Product, with its Product Node and its Changefeed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProductRequest"
+      responses:
+        "201":
+          description: The new Product Node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "409":
+          description: "`slug_taken` or `done_leaf_blocked`"
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Nodes ───────────────────────────────────────────────────
+  /products/{slug}/nodes:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/UserIdHeader"
     post:
-      operationId: createNode
-      summary: Create a node
+      operationId: CreateNode
+      summary: Create a Node, with a Hierarchical Edge to each of its Parents
       requestBody:
         required: true
         content:
@@ -37,76 +111,188 @@ paths:
               $ref: "#/components/schemas/CreateNodeRequest"
       responses:
         "201":
-          description: Node created
+          description: The new Node
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Node"
         "400":
-          $ref: "#/components/responses/BadRequest"
-
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`invalid_reference`, `priority_out_of_range`, or `done_leaf_blocked`"
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
     get:
-      operationId: listNodes
-      summary: List and filter nodes
+      operationId: ListNodes
+      summary: List the Nodes that match each filter, one page at a time
+      description: |
+        Each parameter from `type` to `prerequisitesOf` is a filter. A Node
+        matches a filter if it matches at least one value of the filter. A
+        Node matches `search` if its `title` or `description` contains the
+        text of `search`, ignoring case.
       parameters:
+        - name: search
+          in: query
+          description: |
+            Matches a Node whose `title` or `description` contains this text,
+            ignoring case (e.g. `auth` matches "OAuth login").
+          schema:
+            type: string
+            minLength: 1
         - name: type
           in: query
           schema:
-            $ref: "#/components/schemas/NodeType"
+            type: array
+            minItems: 1
+            items:
+              $ref: "#/components/schemas/NodeType"
         - name: status
           in: query
-          description: Filter tasks by status
           schema:
-            $ref: "#/components/schemas/TaskStatus"
-        - name: search
+            type: array
+            minItems: 1
+            items:
+              $ref: "#/components/schemas/Status"
+        - name: assignee
           in: query
-          description: Full-text search on title and description
+          description: The empty text matches a Node that has no assignee.
+          schema:
+            type: array
+            minItems: 1
+            items:
+              type: string
+        - name: watcher
+          in: query
+          description: The empty text matches a Node that has no watchers.
+          schema:
+            type: array
+            minItems: 1
+            items:
+              type: string
+        - name: archived
+          in: query
+          schema:
+            type: array
+            minItems: 1
+            default: [false]
+            items:
+              type: boolean
+        - name: blocked
+          in: query
+          schema:
+            type: array
+            minItems: 1
+            items:
+              type: boolean
+        - name: childrenOf
+          in: query
+          schema:
+            $ref: "#/components/schemas/NodeIdList"
+        - name: descendantsOf
+          in: query
+          schema:
+            $ref: "#/components/schemas/NodeIdList"
+        - name: parentsOf
+          in: query
+          schema:
+            $ref: "#/components/schemas/NodeIdList"
+        - name: ancestorsOf
+          in: query
+          schema:
+            $ref: "#/components/schemas/NodeIdList"
+        - name: dependentsOf
+          in: query
+          schema:
+            $ref: "#/components/schemas/NodeIdList"
+        - name: prerequisitesOf
+          in: query
+          schema:
+            $ref: "#/components/schemas/NodeIdList"
+        - name: sort
+          in: query
+          description: |
+            `lastUpdated` sorts by the version of the Node. `priority` sorts by
+            the priority of the Hierarchical Edge to the Node that `childrenOf`
+            names, and needs exactly 1 value of `childrenOf`.
           schema:
             type: string
-        - name: offset
+            enum: [lastUpdated, priority]
+            default: lastUpdated
+        - name: direction
           in: query
+          description: Only with the sort `lastUpdated`. If absent, `descending`.
+          schema:
+            type: string
+            enum: [descending, ascending]
+        - name: startAfterKey
+          in: query
+          description: The `lastKey` of the previous page. Give it together with `startAfterId`.
           schema:
             type: integer
-            default: 0
+            format: int64
+        - name: startAfterId
+          in: query
+          description: The `id` of the last Node of the previous page. Give it together with `startAfterKey`.
+          schema:
+            type: string
+            format: uuid
         - name: limit
           in: query
           schema:
             type: integer
-            default: 50
+            format: int64
+            minimum: 1
             maximum: 200
+            default: 50
       responses:
         "200":
-          description: List of nodes
+          description: A page of Nodes
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/NodeList"
+                $ref: "#/components/schemas/NodePage"
         "400":
-          $ref: "#/components/responses/BadRequest"
-
-  /namespaces/{namespace}/nodes/{id}:
-    parameters:
-      - $ref: "#/components/parameters/Namespace"
-      - $ref: "#/components/parameters/NodeId"
-
-    get:
-      operationId: getNode
-      summary: Get a node by ID with its direct relationships
-      responses:
-        "200":
-          description: Node with relationships
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/NodeWithRelationships"
-        "400":
-          $ref: "#/components/responses/BadRequest"
+          $ref: "#/components/responses/InvalidRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
+  /products/{slug}/nodes/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/NodeId"
+      - $ref: "#/components/parameters/UserIdHeader"
+    get:
+      operationId: GetNode
+      summary: Get a Node
+      parameters:
+        - $ref: "#/components/parameters/IncludeArchived"
+      responses:
+        "200":
+          description: The Node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
     patch:
-      operationId: updateNode
-      summary: Partially update a node
+      operationId: UpdateNode
+      summary: Set or remove the values of Fields of a Node
       requestBody:
         required: true
         content:
@@ -115,43 +301,248 @@ paths:
               $ref: "#/components/schemas/UpdateNodeRequest"
       responses:
         "200":
-          description: Updated node
+          description: The Node
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Node"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          $ref: "#/components/responses/InvalidRequest"
         "404":
           $ref: "#/components/responses/NotFound"
-
+        "409":
+          description: "`version_conflict`, `status_is_derived`, or `done_leaf_blocked`"
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
     delete:
-      operationId: deleteNode
-      summary: Delete a node and all its edges
+      operationId: DeleteNode
+      summary: Delete a Node, and each Edge that points from it
+      description: If the Node is the Product Node, the Product becomes a deleted Product.
+      parameters:
+        - $ref: "#/components/parameters/Version"
       responses:
         "204":
-          description: Node deleted
+          description: The Node is deleted
         "400":
-          $ref: "#/components/responses/BadRequest"
+          $ref: "#/components/responses/InvalidRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`version_conflict`, `has_incoming_edges`, or `done_leaf_blocked`"
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/{slug}/nodes/{id}/archive:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/NodeId"
+      - $ref: "#/components/parameters/UserIdHeader"
+    post:
+      operationId: ArchiveNode
+      summary: Place the archived mark on a Node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArchiveNodeRequest"
+      responses:
+        "200":
+          description: The Node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`version_conflict` or `done_leaf_blocked`"
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/{slug}/nodes/{id}/unarchive:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/NodeId"
+      - $ref: "#/components/parameters/UserIdHeader"
+    post:
+      operationId: UnarchiveNode
+      summary: Remove the archived mark from a Node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArchiveNodeRequest"
+      responses:
+        "200":
+          description: The Node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`version_conflict` or `done_leaf_blocked`"
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/{slug}/nodes/{id}/watch:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/NodeId"
+      - $ref: "#/components/parameters/UserIdHeader"
+    post:
+      operationId: WatchNode
+      summary: Add the user of the request to the watchers of a Node
+      description: The request has no body members. A body, if present, must be `{}`.
+      responses:
+        "200":
+          description: The Node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/{slug}/nodes/{id}/unwatch:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/NodeId"
+      - $ref: "#/components/parameters/UserIdHeader"
+    post:
+      operationId: UnwatchNode
+      summary: Remove the user of the request from the watchers of a Node
+      description: The request has no body members. A body, if present, must be `{}`.
+      responses:
+        "200":
+          description: The Node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/{slug}/nodes/{id}/edges-from:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/NodeId"
+      - $ref: "#/components/parameters/UserIdHeader"
+    get:
+      operationId: GetEdgesFrom
+      summary: Get the Edges that point from a Node
+      parameters:
+        - $ref: "#/components/parameters/IncludeArchived"
+      responses:
+        "200":
+          description: The Edges, in id order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EdgeList"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/{slug}/nodes/{id}/edges-to:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/NodeId"
+      - $ref: "#/components/parameters/UserIdHeader"
+    get:
+      operationId: GetEdgesTo
+      summary: Get the Edges that point to a Node
+      parameters:
+        - $ref: "#/components/parameters/IncludeArchived"
+      responses:
+        "200":
+          description: The Edges, in id order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EdgeList"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/{slug}/next-work:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/UserIdHeader"
+    get:
+      operationId: GetNextWork
+      summary: Get the next available leaf of the Product
+      responses:
+        "200":
+          description: The next available leaf, or no `node` if the Product has none
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NextWork"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   # ── Edges ───────────────────────────────────────────────────
-  /namespaces/{namespace}/edges:
+  /products/{slug}/edges:
     parameters:
-      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/UserIdHeader"
     post:
-      operationId: createEdge
-      summary: Create an edge between two nodes
-      description: >
-        Both nodes must exist in the request's namespace. `BREAKS_DOWN_TO`
-        and `IMPLEMENTED_BY` follow the breakdown hierarchy
-        (vision → goal → feature → requirement → task → output).
-        `DEPENDS_ON` means the source depends on the target; both nodes must
-        have the same type, a node can't depend on itself, and an edge that
-        would close a cycle of `DEPENDS_ON` edges is rejected with 409.
-        Creating a `DEPENDS_ON` edge that already exists is idempotent and
-        returns 201 without creating a second edge.
+      operationId: CreateEdge
+      summary: Create an Edge between 2 Nodes
       requestBody:
         required: true
         content:
@@ -160,724 +551,1055 @@ paths:
               $ref: "#/components/schemas/CreateEdgeRequest"
       responses:
         "201":
-          description: Edge created
+          description: The new Edge
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Edge"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          $ref: "#/components/responses/InvalidRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: The edge would create a cycle of DEPENDS_ON edges
+          description: |
+            `invalid_reference`, `version_conflict`, `already_connected`,
+            `cycle`, `priority_out_of_range`, or `done_leaf_blocked`
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
-    delete:
-      operationId: deleteEdge
-      summary: Delete an edge between two nodes
+  /products/{slug}/edges/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/EdgeId"
+      - $ref: "#/components/parameters/UserIdHeader"
+    get:
+      operationId: GetEdge
+      summary: Get an Edge
+      parameters:
+        - $ref: "#/components/parameters/IncludeArchived"
+      responses:
+        "200":
+          description: The Edge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Edge"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      operationId: UpdateEdge
+      summary: Set the priority of a Hierarchical Edge
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DeleteEdgeRequest"
+              $ref: "#/components/schemas/UpdateEdgeRequest"
+      responses:
+        "200":
+          description: The Edge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Edge"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`version_conflict` or `done_leaf_blocked`"
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      operationId: DeleteEdge
+      summary: Delete an Edge
+      parameters:
+        - $ref: "#/components/parameters/Version"
       responses:
         "204":
-          description: Edge deleted
+          description: The Edge is deleted
         "400":
-          $ref: "#/components/responses/BadRequest"
+          $ref: "#/components/responses/InvalidRequest"
         "404":
           $ref: "#/components/responses/NotFound"
-
-  # ── Graph Traversal ─────────────────────────────────────────
-  /namespaces/{namespace}/nodes/{id}/children:
-    parameters:
-      - $ref: "#/components/parameters/Namespace"
-      - $ref: "#/components/parameters/NodeId"
-    get:
-      operationId: getChildren
-      summary: Get direct children of a node
-      description: Follows BREAKS_DOWN_TO and IMPLEMENTED_BY edges only; DEPENDS_ON edges are ignored.
-      responses:
-        "200":
-          description: List of child nodes
+        "409":
+          description: "`version_conflict`, `parent_required`, or `done_leaf_blocked`"
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/NodeArray"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
-  /namespaces/{namespace}/nodes/{id}/parents:
+  /products/{slug}/edges/{id}/head:
     parameters:
-      - $ref: "#/components/parameters/Namespace"
-      - $ref: "#/components/parameters/NodeId"
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/EdgeId"
+      - $ref: "#/components/parameters/UserIdHeader"
     get:
-      operationId: getParents
-      summary: Get direct parents of a node
-      description: Follows BREAKS_DOWN_TO and IMPLEMENTED_BY edges only; DEPENDS_ON edges are ignored.
+      operationId: GetHeadNode
+      summary: Get the Head Node of an Edge
+      parameters:
+        - $ref: "#/components/parameters/IncludeArchived"
       responses:
         "200":
-          description: List of parent nodes
+          description: The Head Node
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/NodeArray"
+                $ref: "#/components/schemas/Node"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          $ref: "#/components/responses/InvalidRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
-  /namespaces/{namespace}/nodes/{id}/subtree:
+  /products/{slug}/edges/{id}/tail:
     parameters:
-      - $ref: "#/components/parameters/Namespace"
-      - $ref: "#/components/parameters/NodeId"
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/EdgeId"
+      - $ref: "#/components/parameters/UserIdHeader"
     get:
-      operationId: getSubtree
-      summary: Get the full descendant tree of a node (recursive)
-      description: Follows BREAKS_DOWN_TO and IMPLEMENTED_BY edges only; DEPENDS_ON edges are ignored.
+      operationId: GetTailNode
+      summary: Get the Tail Node of an Edge
+      parameters:
+        - $ref: "#/components/parameters/IncludeArchived"
       responses:
         "200":
-          description: Tree of descendant nodes
+          description: The Tail Node
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TreeNode"
+                $ref: "#/components/schemas/Node"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          $ref: "#/components/responses/InvalidRequest"
         "404":
           $ref: "#/components/responses/NotFound"
-
-  /namespaces/{namespace}/nodes/{id}/lineage:
-    parameters:
-      - $ref: "#/components/parameters/Namespace"
-      - $ref: "#/components/parameters/NodeId"
-    get:
-      operationId: getLineage
-      summary: Trace ancestors up to the root Vision
-      description: Follows BREAKS_DOWN_TO and IMPLEMENTED_BY edges only; DEPENDS_ON edges are ignored.
-      responses:
-        "200":
-          description: Ordered list of ancestor nodes from root to this node
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/NodeArray"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-
-  # ── Dependencies ────────────────────────────────────────────
-  /namespaces/{namespace}/nodes/{id}/dependencies:
-    parameters:
-      - $ref: "#/components/parameters/Namespace"
-      - $ref: "#/components/parameters/NodeId"
-    get:
-      operationId: getDependencies
-      summary: Get the nodes this node depends on
-      description: Targets of the node's outgoing DEPENDS_ON edges.
-      responses:
-        "200":
-          description: List of nodes this node depends on
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/NodeArray"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-
-  /namespaces/{namespace}/nodes/{id}/dependents:
-    parameters:
-      - $ref: "#/components/parameters/Namespace"
-      - $ref: "#/components/parameters/NodeId"
-    get:
-      operationId: getDependents
-      summary: Get the nodes that depend on this node
-      description: Sources of the node's incoming DEPENDS_ON edges.
-      responses:
-        "200":
-          description: List of nodes that depend on this node
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/NodeArray"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   # ── Changefeed ──────────────────────────────────────────────
-  /namespaces/{namespace}/subscribe:
+  /products/{slug}/latest-change-id:
     parameters:
-      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/UserIdHeader"
     get:
-      operationId: subscribe
-      summary: SSE stream of node changes
-      description: >
-        Server-Sent Events stream of node changes in the namespace, filtered
-        by node type(s). If no type param is provided, all changes in the
-        namespace are streamed. Each event includes a changeId
-        that clients can use to resume via the /changes endpoint. The SSE
-        id of each event is its changeId, so a client that reconnects with a
-        Last-Event-ID header first receives the changes it missed from the
-        changelog, then live changes.
+      operationId: GetLatestChangeId
+      summary: Get the latest Change ID of the Product
+      responses:
+        "200":
+          description: The latest Change ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LatestChangeId"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/{slug}/poll:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+      - $ref: "#/components/parameters/UserIdHeader"
+    get:
+      operationId: Poll
+      summary: Get the Change Entries after a Change ID that match the filter groups
       parameters:
-        - name: Last-Event-ID
-          in: header
-          description: >
-            Replay the changes in the namespace (and of the requested types)
-            with a changeId greater than this one before streaming live
-            changes.
+        - name: startChangeId
+          in: query
+          required: true
+          description: Return only the Change Entries whose Change ID is higher than this value.
           schema:
             type: integer
             format: int64
-        - name: type
+            minimum: 0
+        - name: limit
           in: query
-          description: Node type(s) to subscribe to
+          required: true
           schema:
-            type: array
-            items:
-              $ref: "#/components/schemas/NodeType"
-          style: form
-          explode: true
+            type: integer
+            format: int64
+            minimum: 1
+            maximum: 1000
+        - $ref: "#/components/parameters/FilterGroups"
       responses:
         "200":
-          description: SSE event stream
+          description: A page of Change Entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangePage"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`changefeed_disabled`, `change_out_of_range`, or `change_entries_deleted`"
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /products/{slug}/subscribe:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+    get:
+      operationId: Subscribe
+      summary: Open a subscription that pushes each new Change Entry that matches the filter groups
+      description: |
+        A browser `EventSource` can't set request headers, so it can give the
+        user ID in `userId`, and each other input in the query. When an
+        `EventSource` connects again, it sends `Last-Event-ID`.
+
+        To end the subscription, the client closes the connection.
+      parameters:
+        - name: Nodoplex-User-Id
+          in: header
+          description: |
+            The user ID of the user who sends the request, percent-encoded. If
+            the request doesn't carry this header, the server reads the user ID
+            from `userId`.
+          schema:
+            type: string
+            minLength: 1
+        - name: userId
+          in: query
+          description: The user ID, if the request doesn't carry the header `Nodoplex-User-Id`.
+          schema:
+            $ref: "#/components/schemas/UserId"
+        - name: Last-Event-ID
+          in: header
+          description: |
+            The start Change ID. If the request carries this header, the server
+            reads the start Change ID from it, and not from `startChangeId`.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: startChangeId
+          in: query
+          description: |
+            Push only the Change Entries whose Change ID is higher than this
+            value. If absent, the latest Change ID of the Product.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - $ref: "#/components/parameters/FilterGroups"
+      responses:
+        "200":
+          description: |
+            An event stream in the server-sent events format. Each line ends
+            with LF. The stream holds only the messages below.
+
+            For each Change Entry that matches the filter groups, a message
+            whose `id` is the `changeId`, and whose `data` is the
+            `ChangeEntry` as JSON with no whitespace outside strings. The
+            message has no `event:` line, so its event type is `message`:
+
+            ```
+            id: 42
+            data: {"changeId":42,"time":"2026-11-23T08:15:30.123456Z","userId":"alice","changes":[...]}
+
+            ```
+
+            To end the subscription, the server sends one `end` message whose
+            `data` is an `Error` as JSON with no whitespace outside strings, and
+            then ends the response. The `code` is `change_entries_deleted`,
+            `not_found`, or `internal_error`:
+
+            ```
+            event: end
+            data: {"code":"change_entries_deleted","message":"..."}
+
+            ```
+
+            After 30 s with no line written, the server writes a comment:
+
+            ```
+            : keepalive
+
+            ```
           content:
             text/event-stream:
               schema:
                 type: string
         "400":
-          $ref: "#/components/responses/BadRequest"
-
-  /namespaces/{namespace}/changes:
-    parameters:
-      - $ref: "#/components/parameters/Namespace"
-    get:
-      operationId: listChanges
-      summary: Fetch persisted changes since a given changeId
-      description: >
-        Returns a paginated list of change entries ordered by sequence.
-        Clients that missed SSE events can catch up by polling from their
-        last known changeId.
-      parameters:
-        - name: type
-          in: query
-          required: true
-          description: Node type to fetch changes for
-          schema:
-            $ref: "#/components/schemas/NodeType"
-        - name: since
-          in: query
-          description: Return changes after this changeId (exclusive). Omit to start from the beginning.
-          schema:
-            type: integer
-            format: int64
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 100
-            maximum: 1000
-      responses:
-        "200":
-          description: List of change entries
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`changefeed_disabled`, `change_out_of_range`, or `change_entries_deleted`"
+          headers:
+            Nodoplex-Error-Code:
+              $ref: "#/components/headers/NodoplexErrorCode"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ChangeList"
-        "400":
-          $ref: "#/components/responses/BadRequest"
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Health checks ───────────────────────────────────────────
+  /livez:
+    get:
+      operationId: Livez
+      summary: Liveness probe
+      description: The server ignores the query.
+      responses:
+        "200":
+          description: The server can answer an HTTP request. No body.
+
+  /startupz:
+    get:
+      operationId: Startupz
+      summary: Startup probe
+      description: The server ignores the query.
+      responses:
+        "200":
+          description: |
+            The server has finished starting: it has connected to Neo4j and to
+            PostgreSQL, and has created what it needs in them. No body.
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /readyz:
+    get:
+      operationId: Readyz
+      summary: Readiness probe
+      description: The server ignores the query.
+      responses:
+        "200":
+          description: |
+            The server has finished starting, and a query to Neo4j and a query
+            to PostgreSQL both succeed. No body.
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
 # ═══════════════════════════════════════════════════════════════
 components:
   parameters:
-    Namespace:
-      name: namespace
+    Slug:
+      name: slug
       in: path
       required: true
-      description: >
-        Identifier of the namespace the request operates in: 1 to 256 ASCII
-        letters, digits, hyphens, underscores, colons and periods, with no
-        period at the start or end. Nodoplex attaches no meaning to the value.
+      description: The slug of the Product.
       schema:
-        type: string
-        minLength: 1
-        maxLength: 256
-        pattern: '^[A-Za-z0-9_:-]([A-Za-z0-9_:.-]*[A-Za-z0-9_:-])?$'
+        $ref: "#/components/schemas/Slug"
 
     NodeId:
       name: id
       in: path
       required: true
+      description: The `id` of the Node.
       schema:
         type: string
         format: uuid
 
+    EdgeId:
+      name: id
+      in: path
+      required: true
+      description: The `id` of the Edge.
+      schema:
+        type: string
+        format: uuid
+
+    UserIdHeader:
+      name: Nodoplex-User-Id
+      in: header
+      required: true
+      description: |
+        The user ID of the user who sends the request, percent-encoded. The
+        server percent-decodes the value (e.g. `%20alice` gives ` alice`).
+      schema:
+        type: string
+        minLength: 1
+
+    IncludeArchived:
+      name: includeArchived
+      in: query
+      description: If `true`, the read includes archived Nodes and their Edges.
+      schema:
+        type: boolean
+        default: false
+
+    Version:
+      name: version
+      in: query
+      required: true
+      description: The version of the Node that the client last read. For an Edge, the version of its Tail Node.
+      schema:
+        type: integer
+        format: int64
+
+    FilterGroups:
+      name: filterGroups
+      in: query
+      description: |
+        One parameter that holds the filter groups as a JSON text
+        (e.g. `[{"type":["task"]}]` before percent-encoding). A Change Entry
+        matches if at least one of its changes matches at least one group. If
+        absent or empty, one group that holds only the default `archived`
+        filter.
+      content:
+        application/json:
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/FilterGroup"
+
+  headers:
+    NodoplexErrorCode:
+      description: The `code` of the refusal.
+      required: true
+      schema:
+        $ref: "#/components/schemas/ErrorCode"
+
   responses:
-    BadRequest:
-      description: Invalid request
+    InvalidRequest:
+      description: "`invalid_request`"
+      headers:
+        Nodoplex-Error-Code:
+          $ref: "#/components/headers/NodoplexErrorCode"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     NotFound:
-      description: Resource not found
+      description: "`not_found`"
+      headers:
+        Nodoplex-Error-Code:
+          $ref: "#/components/headers/NodoplexErrorCode"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: "`unavailable`"
+      headers:
+        Nodoplex-Error-Code:
+          $ref: "#/components/headers/NodoplexErrorCode"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: "`internal_error`"
+      headers:
+        Nodoplex-Error-Code:
+          $ref: "#/components/headers/NodoplexErrorCode"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
 
   schemas:
-    # ── Enums ───────────────────────────────────────────────
+    # ── Named schema types ────────────────────────────────────
     NodeType:
+      description: |
+        The Type of a Node. The Parent of a Node must have the Type just before
+        the Type of the Node in this list. A `product` Node has no Parent.
       type: string
-      enum: [vision, goal, feature, requirement, task, output]
+      enum: [product, vision, goal, feature, requirement, task, subtask]
 
-    TaskStatus:
+    EdgeKind:
       type: string
-      enum: [backlog, in_progress, done, blocked]
+      enum: [hierarchical, dependency]
 
-    EdgeType:
+    Status:
       type: string
-      enum: [BREAKS_DOWN_TO, IMPLEMENTED_BY, DEPENDS_ON]
+      enum: [not_started, in_progress, done]
 
-    ChangeAction:
+    UserId:
+      description: A user ID.
       type: string
-      enum: [created, updated, deleted]
+      minLength: 1
 
-    # ── Error ───────────────────────────────────────────────
-    Error:
-      type: object
-      required: [message]
-      properties:
-        message:
-          type: string
+    Slug:
+      description: |
+        3 or more labels, with `.` between each label and the next
+        (e.g. `com.example.language-app`). Each label has from 1 to 63
+        lowercase ASCII letters, ASCII digits, or `-`, and doesn't start or end
+        with `-`.
+      type: string
+      maxLength: 253
+      pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?){2,}$'
 
-    # ── Individual node types ───────────────────────────────
-    Vision:
+    NodeIdList:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        format: uuid
+
+    # ── Fields ────────────────────────────────────────────────
+    Fields:
+      description: Each Field of the Node that has a value. Only a Product Node has `slug`.
       type: object
-      required: [id, type, title]
+      additionalProperties: false
+      required: [product, title, outputs, status]
       properties:
-        id:
-          type: string
-          format: uuid
-        type:
-          type: string
-          enum: [vision]
+        product:
+          $ref: "#/components/schemas/Slug"
         title:
-          type: string
-        description:
-          type: string
-
-    Goal:
-      type: object
-      required: [id, type, title]
-      properties:
-        id:
-          type: string
-          format: uuid
-        type:
-          type: string
-          enum: [goal]
-        title:
-          type: string
-        description:
-          type: string
-        targetDate:
-          type: string
-          format: date
-          description: Target completion date for the goal (YYYY-MM-DD)
-
-    Feature:
-      type: object
-      required: [id, type, title]
-      properties:
-        id:
-          type: string
-          format: uuid
-        type:
-          type: string
-          enum: [feature]
-        title:
-          type: string
-        description:
-          type: string
-        priority:
-          type: integer
-          description: Lower number = higher priority
-
-    Requirement:
-      type: object
-      required: [id, type, title]
-      properties:
-        id:
-          type: string
-          format: uuid
-        type:
-          type: string
-          enum: [requirement]
-        title:
-          type: string
-        description:
-          type: string
-        acceptanceCriteria:
-          type: string
-
-    Task:
-      type: object
-      required: [id, type, title, status]
-      properties:
-        id:
-          type: string
-          format: uuid
-        type:
-          type: string
-          enum: [task]
-        title:
-          type: string
-        description:
-          type: string
-        status:
-          $ref: "#/components/schemas/TaskStatus"
-
-    Output:
-      type: object
-      description: >
-        Something a task produced, such as a Git branch, a document or a
-        deployment. Attach it to its task with an `IMPLEMENTED_BY` edge from
-        the task. Nodoplex stores `outputType` and `payload` without
-        interpreting them.
-      required: [id, type, outputType]
-      properties:
-        id:
-          type: string
-          format: uuid
-        type:
-          type: string
-          enum: [output]
-        outputType:
           type: string
           minLength: 1
-          description: >
-            Kind of output, chosen by the client, for example `git`.
-            Nodoplex doesn't interpret it, but `git` has a documented payload
-            shape (see GitOutputPayload).
         description:
           type: string
-          description: What the output is
-        payload:
-          $ref: "#/components/schemas/OutputPayload"
+        outputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Output"
+        status:
+          $ref: "#/components/schemas/Status"
+        assignee:
+          $ref: "#/components/schemas/UserId"
+        slug:
+          $ref: "#/components/schemas/Slug"
 
-    OutputPayload:
+    NewFields:
+      description: |
+        The Fields of a new Node. If absent, `outputs` is `[]` and `status` is
+        `not_started`. The server sets `product` and `slug`.
       type: object
-      additionalProperties: true
-      description: >
-        Any JSON object. Nodoplex stores it and returns it unchanged, without
-        interpreting or validating it. For `outputType: git`, use the shape of
-        GitOutputPayload.
-
-    GitOutputPayload:
-      type: object
-      description: >
-        Documented payload shape for an output with `outputType: git`.
-        Nodoplex doesn't validate payloads against it.
+      additionalProperties: false
+      required: [title]
       properties:
-        repository:
+        title:
           type: string
-          description: Git remote URL, for example https://github.com/d4nyll/nodoplex.git
-        baseRef:
+          minLength: 1
+        description:
           type: string
-          description: Git ref the work started from, for example `main`
-        currentRef:
+          nullable: true
+        outputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Output"
+        status:
+          $ref: "#/components/schemas/Status"
+        assignee:
           type: string
-          description: Git ref that holds the work, for example a branch name or a commit SHA
+          minLength: 1
+          nullable: true
 
-    # ── Polymorphic Node ────────────────────────────────────
-    Node:
-      oneOf:
-        - $ref: "#/components/schemas/Vision"
-        - $ref: "#/components/schemas/Goal"
-        - $ref: "#/components/schemas/Feature"
-        - $ref: "#/components/schemas/Requirement"
-        - $ref: "#/components/schemas/Task"
-        - $ref: "#/components/schemas/Output"
-      discriminator:
-        propertyName: type
-        mapping:
-          vision: "#/components/schemas/Vision"
-          goal: "#/components/schemas/Goal"
-          feature: "#/components/schemas/Feature"
-          requirement: "#/components/schemas/Requirement"
-          task: "#/components/schemas/Task"
-          output: "#/components/schemas/Output"
-
-    NodeArray:
+    FieldUpdates:
+      description: |
+        The Fields to change. A Field with a value sets that value. A Field
+        with `null` removes its value. Each other Field keeps its value. Only a
+        leaf can take `status`.
       type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          minLength: 1
+        description:
+          type: string
+          nullable: true
+        outputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Output"
+        status:
+          $ref: "#/components/schemas/Status"
+        assignee:
+          type: string
+          minLength: 1
+          nullable: true
+
+    Output:
+      description: A result of the work that a Node represents (e.g. a Git branch, a Slack message).
+      type: object
+      additionalProperties: false
+      required: [outputType]
+      properties:
+        outputType:
+          description: The kind of result (e.g. `git_branch`).
+          type: string
+          minLength: 1
+        title:
+          type: string
+          minLength: 1
+        payload:
+          description: The details of the result. The server returns it as the client gave it.
+          type: object
+          additionalProperties: true
+
+    # ── Nodes and Edges ───────────────────────────────────────
+    Node:
+      type: object
+      additionalProperties: false
+      required: [id, type, version, fields, watchers, archivedMark, archived]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/NodeType"
+        version:
+          description: The Change ID of the newest Change Entry that holds the creation or an update of the Node.
+          type: integer
+          format: int64
+        fields:
+          $ref: "#/components/schemas/Fields"
+        watchers:
+          description: The user ID of each watcher, one time each, in code point order.
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/UserId"
+        archivedMark:
+          description: "`true` if the Node carries the archived mark."
+          type: boolean
+        archived:
+          description: "`true` if the Node carries the archived mark, or if it has a Parent and each of its Parents is archived."
+          type: boolean
+
+    Edge:
+      type: object
+      additionalProperties: false
+      required: [id, kind, tailId, headId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/EdgeKind"
+        tailId:
+          description: The `id` of the Tail Node, which is the Child of a Hierarchical Edge, or the Dependent of a Dependency Edge.
+          type: string
+          format: uuid
+        headId:
+          description: The `id` of the Head Node, which is the Parent of a Hierarchical Edge, or the Prerequisite of a Dependency Edge.
+          type: string
+          format: uuid
+        priority:
+          description: The priority of a Hierarchical Edge. A lower number means a higher priority. Absent from a Dependency Edge.
+          type: integer
+          format: int64
+
+    ParentRef:
+      description: One Parent of a new Node.
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id:
+          description: The `id` of the Parent.
+          type: string
+          format: uuid
+        priority:
+          description: The priority of the new Hierarchical Edge. If absent, 1 more than the largest priority of the other Hierarchical Edges to the Parent, or 10 if there are none.
+          type: integer
+          format: int64
+
+    # ── Changefeed ────────────────────────────────────────────
+    ChangeEntry:
+      type: object
+      additionalProperties: false
+      required: [changeId, time, userId, changes]
+      properties:
+        changeId:
+          type: integer
+          format: int64
+        time:
+          description: The time at which the write took effect.
+          type: string
+          format: date-time
+        userId:
+          $ref: "#/components/schemas/UserId"
+        changes:
+          description: The changes of the write, in any order.
+          type: array
+          items:
+            $ref: "#/components/schemas/Change"
+
+    Change:
+      type: object
+      additionalProperties: false
+      required: [kind, entity]
+      properties:
+        kind:
+          type: string
+          enum: [creation, update, deletion]
+        entity:
+          description: "`node` for a change to a Node, or `edge` for a change to an Edge."
+          type: string
+          enum: [node, edge]
+        before:
+          description: The Node or the Edge before the write, as `entity` gives. Absent if `kind` is `creation`.
+          oneOf:
+            - $ref: "#/components/schemas/Node"
+            - $ref: "#/components/schemas/Edge"
+        after:
+          description: The Node or the Edge after the write, as `entity` gives. Absent if `kind` is `deletion`.
+          oneOf:
+            - $ref: "#/components/schemas/Node"
+            - $ref: "#/components/schemas/Edge"
+
+    FilterGroup:
+      description: |
+        One filter group of a poll or a subscription. Each member is one
+        filter, and a change matches the group if it matches each filter. If
+        `archived` is absent, the group uses `{"check":"either","values":[false]}`.
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        type:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/NodeType"
+        watcher:
+          description: "`null` matches a Node that has no watchers."
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+            nullable: true
+        archived:
+          $ref: "#/components/schemas/BooleanStateFilter"
+        status:
+          $ref: "#/components/schemas/StatusStateFilter"
+        assignee:
+          $ref: "#/components/schemas/AssigneeStateFilter"
+
+    StateFilterCheck:
+      description: |
+        Which Node the server checks: the Node before the change (`before`),
+        after the change (`after`), at both times (`both`), or at either time
+        (`either`).
+      type: string
+      enum: [before, after, both, either]
+
+    BooleanStateFilter:
+      description: |
+        A StateFilter of booleans. Give either `values` alone, or
+        `beforeValues` and `afterValues` together. Give `beforeValues` and
+        `afterValues` only if `check` is `both` or `either`.
+      type: object
+      additionalProperties: false
+      required: [check]
+      properties:
+        check:
+          $ref: "#/components/schemas/StateFilterCheck"
+        values:
+          type: array
+          minItems: 1
+          items:
+            type: boolean
+        beforeValues:
+          type: array
+          minItems: 1
+          items:
+            type: boolean
+        afterValues:
+          type: array
+          minItems: 1
+          items:
+            type: boolean
+
+    StatusStateFilter:
+      description: |
+        A StateFilter of statuses. Give either `values` alone, or
+        `beforeValues` and `afterValues` together. Give `beforeValues` and
+        `afterValues` only if `check` is `both` or `either`.
+      type: object
+      additionalProperties: false
+      required: [check]
+      properties:
+        check:
+          $ref: "#/components/schemas/StateFilterCheck"
+        values:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Status"
+        beforeValues:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Status"
+        afterValues:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Status"
+
+    AssigneeStateFilter:
+      description: |
+        A StateFilter of user IDs. `null` matches a Node that has no assignee.
+        Give either `values` alone, or `beforeValues` and `afterValues`
+        together. Give `beforeValues` and `afterValues` only if `check` is
+        `both` or `either`.
+      type: object
+      additionalProperties: false
+      required: [check]
+      properties:
+        check:
+          $ref: "#/components/schemas/StateFilterCheck"
+        values:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+            nullable: true
+        beforeValues:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+            nullable: true
+        afterValues:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+            nullable: true
+
+    # ── Request bodies ────────────────────────────────────────
+    CreateProductRequest:
+      type: object
+      additionalProperties: false
+      required: [fields]
+      properties:
+        fields:
+          $ref: "#/components/schemas/NewFields"
+
+    CreateNodeRequest:
+      description: |
+        `type` can be any Type except `product`. Each value of `parents` must
+        have a different `id`. A `vision` has exactly 1 Parent.
+      type: object
+      additionalProperties: false
+      required: [type, parents, fields]
+      properties:
+        type:
+          $ref: "#/components/schemas/NodeType"
+        parents:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ParentRef"
+        fields:
+          $ref: "#/components/schemas/NewFields"
+
+    UpdateNodeRequest:
+      type: object
+      additionalProperties: false
+      required: [fields]
+      properties:
+        version:
+          description: |
+            The version of the Node that the client last read. Required if
+            `fields` names a tracked Field. Each Field of this API is tracked.
+          type: integer
+          format: int64
+        fields:
+          $ref: "#/components/schemas/FieldUpdates"
+
+    ArchiveNodeRequest:
+      description: The body of `ArchiveNode` and of `UnarchiveNode`.
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version:
+          description: The version of the Node that the client last read.
+          type: integer
+          format: int64
+
+    CreateEdgeRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, tailId, headId, version]
+      properties:
+        kind:
+          $ref: "#/components/schemas/EdgeKind"
+        tailId:
+          type: string
+          format: uuid
+        headId:
+          type: string
+          format: uuid
+        priority:
+          description: Only for a Hierarchical Edge. If absent, 1 more than the largest priority of the other Hierarchical Edges to the Head Node, or 10 if there are none.
+          type: integer
+          format: int64
+        version:
+          description: The version of the Tail Node that the client last read.
+          type: integer
+          format: int64
+
+    UpdateEdgeRequest:
+      type: object
+      additionalProperties: false
+      required: [priority, version]
+      properties:
+        priority:
+          type: integer
+          format: int64
+        version:
+          description: The version of the Tail Node that the client last read.
+          type: integer
+          format: int64
+
+    # ── Outputs of operations ─────────────────────────────────
+    NodePage:
+      type: object
+      additionalProperties: false
       required: [nodes]
       properties:
         nodes:
           type: array
           items:
             $ref: "#/components/schemas/Node"
-
-    NodeList:
-      type: object
-      required: [nodes, total]
-      properties:
-        nodes:
-          type: array
-          items:
-            $ref: "#/components/schemas/Node"
-        total:
-          type: integer
-          description: Total number of matching nodes
-
-    NodeWithRelationships:
-      type: object
-      required: [node, parents, children]
-      properties:
-        node:
-          $ref: "#/components/schemas/Node"
-        parents:
-          type: array
-          items:
-            $ref: "#/components/schemas/Node"
-        children:
-          type: array
-          items:
-            $ref: "#/components/schemas/Node"
-
-    TreeNode:
-      type: object
-      required: [node, children]
-      properties:
-        node:
-          $ref: "#/components/schemas/Node"
-        children:
-          type: array
-          items:
-            $ref: "#/components/schemas/TreeNode"
-
-    # ── Create / Update requests ────────────────────────────
-    CreateNodeRequest:
-      oneOf:
-        - $ref: "#/components/schemas/CreateVision"
-        - $ref: "#/components/schemas/CreateGoal"
-        - $ref: "#/components/schemas/CreateFeature"
-        - $ref: "#/components/schemas/CreateRequirement"
-        - $ref: "#/components/schemas/CreateTask"
-        - $ref: "#/components/schemas/CreateOutput"
-      discriminator:
-        propertyName: type
-        mapping:
-          vision: "#/components/schemas/CreateVision"
-          goal: "#/components/schemas/CreateGoal"
-          feature: "#/components/schemas/CreateFeature"
-          requirement: "#/components/schemas/CreateRequirement"
-          task: "#/components/schemas/CreateTask"
-          output: "#/components/schemas/CreateOutput"
-
-    CreateVision:
-      type: object
-      required: [type, title]
-      properties:
-        type:
-          type: string
-          enum: [vision]
-        title:
-          type: string
-        description:
-          type: string
-
-    CreateGoal:
-      type: object
-      required: [type, title]
-      properties:
-        type:
-          type: string
-          enum: [goal]
-        title:
-          type: string
-        description:
-          type: string
-        targetDate:
-          type: string
-          format: date
-          description: Target completion date for the goal (YYYY-MM-DD)
-
-    CreateFeature:
-      type: object
-      required: [type, title]
-      properties:
-        type:
-          type: string
-          enum: [feature]
-        title:
-          type: string
-        description:
-          type: string
-        priority:
-          type: integer
-
-    CreateRequirement:
-      type: object
-      required: [type, title]
-      properties:
-        type:
-          type: string
-          enum: [requirement]
-        title:
-          type: string
-        description:
-          type: string
-        acceptanceCriteria:
-          type: string
-
-    CreateTask:
-      type: object
-      required: [type, title, status]
-      properties:
-        type:
-          type: string
-          enum: [task]
-        title:
-          type: string
-        description:
-          type: string
-        status:
-          $ref: "#/components/schemas/TaskStatus"
-
-    CreateOutput:
-      type: object
-      required: [type, outputType]
-      properties:
-        type:
-          type: string
-          enum: [output]
-        outputType:
-          type: string
-          minLength: 1
-          description: >
-            Kind of output, chosen by the client, for example `git`.
-            Nodoplex doesn't interpret it, but `git` has a documented payload
-            shape (see GitOutputPayload).
-        description:
-          type: string
-        payload:
-          $ref: "#/components/schemas/OutputPayload"
-
-    UpdateNodeRequest:
-      type: object
-      description: >
-        Fields to change. `outputType` and `payload` only apply to Output
-        nodes, and `payload` replaces the whole stored payload.
-      properties:
-        title:
-          type: string
-        description:
-          type: string
-        priority:
-          type: integer
-          description: Only applicable for Feature nodes
-        acceptanceCriteria:
-          type: string
-          description: Only applicable for Requirement nodes
-        status:
-          $ref: "#/components/schemas/TaskStatus"
-        targetDate:
-          type: string
-          format: date
-          description: Only applicable for Goal nodes (YYYY-MM-DD)
-        outputType:
-          type: string
-          minLength: 1
-        payload:
-          $ref: "#/components/schemas/OutputPayload"
-
-    # ── Edges ───────────────────────────────────────────────
-    Edge:
-      type: object
-      required: [sourceId, targetId, type]
-      properties:
-        sourceId:
-          type: string
-          format: uuid
-        targetId:
-          type: string
-          format: uuid
-        type:
-          $ref: "#/components/schemas/EdgeType"
-
-    CreateEdgeRequest:
-      type: object
-      required: [sourceId, targetId, type]
-      properties:
-        sourceId:
-          type: string
-          format: uuid
-        targetId:
-          type: string
-          format: uuid
-        type:
-          $ref: "#/components/schemas/EdgeType"
-
-    DeleteEdgeRequest:
-      type: object
-      required: [sourceId, targetId, type]
-      properties:
-        sourceId:
-          type: string
-          format: uuid
-        targetId:
-          type: string
-          format: uuid
-        type:
-          $ref: "#/components/schemas/EdgeType"
-
-    # ── Changelog ───────────────────────────────────────────
-    ChangeEntry:
-      type: object
-      required: [changeId, action, nodeType, nodeId, timestamp]
-      properties:
-        changeId:
+        lastKey:
+          description: The sort key of the last Node in `nodes`. Absent if `nodes` is empty.
           type: integer
           format: int64
-        action:
-          $ref: "#/components/schemas/ChangeAction"
-        nodeType:
-          $ref: "#/components/schemas/NodeType"
-        nodeId:
-          type: string
-          format: uuid
+
+    ProductList:
+      type: object
+      additionalProperties: false
+      required: [products]
+      properties:
+        products:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+
+    EdgeList:
+      type: object
+      additionalProperties: false
+      required: [edges]
+      properties:
+        edges:
+          description: In id order.
+          type: array
+          items:
+            $ref: "#/components/schemas/Edge"
+
+    NextWork:
+      type: object
+      additionalProperties: false
+      properties:
         node:
           $ref: "#/components/schemas/Node"
-        previous:
-          $ref: "#/components/schemas/Node"
-        timestamp:
-          type: string
-          format: date-time
 
-    ChangeList:
+    ChangePage:
       type: object
-      required: [changes]
+      additionalProperties: false
+      required: [changeEntries, latestChangeId]
       properties:
-        changes:
+        changeEntries:
+          description: In ascending order of Change ID.
           type: array
           items:
             $ref: "#/components/schemas/ChangeEntry"
-        nextSince:
+        latestChangeId:
+          description: The latest Change ID of the Product, from the same state as `changeEntries`.
           type: integer
           format: int64
-          description: >
-            The changeId of the last entry in the list. Use as the `since`
-            parameter in the next request for cursor-based pagination.
+
+    LatestChangeId:
+      type: object
+      additionalProperties: false
+      required: [latestChangeId]
+      properties:
+        latestChangeId:
+          type: integer
+          format: int64
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          description: A description of the refusal for a person to read.
+          type: string
+
+    ErrorCode:
+      description: |
+        The identifier of a refusal. Each `code` has one status:
+
+        | `code`                   | Status | Condition |
+        | ------------------------ | ------ | --------- |
+        | `invalid_request`        | 400    | the request isn't valid |
+        | `not_found`              | 404    | the Product, the Node, or the Edge doesn't exist, or the read leaves it out because it is archived. Also, the path matches no operation |
+        | `method_not_allowed`     | 405    | the path matches an operation, but not with the method of the request |
+        | `slug_taken`             | 409    | a Product that exists, or a deleted Product, has the slug |
+        | `invalid_reference`      | 409    | an `id` in the input is the `id` of no Node in the Product, or of a Node that can't be the Parent |
+        | `already_connected`      | 409    | an Edge already connects the 2 Nodes |
+        | `cycle`                  | 409    | the new Edge would form a cycle |
+        | `parent_required`        | 409    | the Edge is the only Hierarchical Edge that points from its Tail Node |
+        | `has_incoming_edges`     | 409    | an Edge points to the Node |
+        | `version_conflict`       | 409    | the version of the Node isn't the version in the input          |
+        | `status_is_derived`      | 409    | the input sets the status of a Node that isn't a leaf |
+        | `done_leaf_blocked`      | 409    | after the write, a leaf whose status is `done` would be blocked |
+        | `priority_out_of_range`  | 409    | the largest priority of the other Hierarchical Edges to the Parent is 2^63 - 1 |
+        | `changefeed_disabled`    | 409    | the server doesn't expose the Changefeed |
+        | `change_out_of_range`    | 409    | the start Change ID is higher than the latest Change ID of the Product |
+        | `change_entries_deleted` | 409    | the server has deleted a Change Entry after the start Change ID, or after the position of the subscription |
+        | `unavailable`            | 503    | a health check fails |
+        | `internal_error`         | 500    | the server can't complete the operation for a reason that has no other `code` |
+      type: string
+      enum:
+        - invalid_request
+        - not_found
+        - method_not_allowed
+        - slug_taken
+        - invalid_reference
+        - already_connected
+        - cycle
+        - parent_required
+        - has_incoming_edges
+        - version_conflict
+        - status_is_derived
+        - done_leaf_blocked
+        - priority_out_of_range
+        - changefeed_disabled
+        - change_out_of_range
+        - change_entries_deleted
+        - unavailable
+        - internal_error

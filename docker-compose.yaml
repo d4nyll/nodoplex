@@ -9,9 +9,10 @@ services:
       NEO4J_PASSWORD: changeme
       POSTGRES_URL: postgres://nodoplex:changeme@postgres:5432/nodoplex?sslmode=disable
       PORT: "8080"
-    # Neo4j opens its Bolt port after its container has started, and the API
-    # exits if that connection fails. Compose restarts the API, with the wait
-    # doubling from 100 ms, and stops after 15 failed starts.
+    # Neo4j opens its Bolt port after its container has started. The API tries
+    # to connect again every 2 s until it can start. If the API exits with an
+    # error, Compose restarts it, with the wait doubling from 100 ms, and stops
+    # after 15 failed starts.
     restart: on-failure:15
     depends_on:
       neo4j:

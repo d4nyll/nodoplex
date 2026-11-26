@@ -1,286 +1,152 @@
 # Nodoplex
 
-Graph-based project management platform. All project entities -- visions, goals, features, requirements, tasks, and outputs -- are stored as nodes in a Neo4j graph, giving every stakeholder a single shared view of how work connects to company goals.
+Nodoplex is a server that records the work on a product as a directed acyclic graph. Each item of work is a Node, and each relationship between 2 Nodes is a directed Edge. For each product, Nodoplex also keeps a Changefeed: a log of the changes to the graph.
+
+The specifications in [`specs/`](specs/) define the behavior:
+
+- [`00_mental-model.md`](specs/00_mental-model.md): the concepts
+- [`01_base-specification.md`](specs/01_base-specification.md): the rules, the steps of each operation, and the error codes
+- [`02_extended-specification.md`](specs/02_extended-specification.md): HTTP, JSON, server-sent events, storage, and configuration
+
+The API contract is [`api/openapi.yaml`](api/openapi.yaml) (OpenAPI 3.0.3).
 
 ## Architecture
 
 ```
-Vision → Goal → Feature → Requirement → Task → Output
-         (BREAKS_DOWN_TO)              (IMPLEMENTED_BY)
+Product <- Vision <- Goal <- Feature <- Requirement <- Task <- SubTask
 ```
 
-A node can also depend on another node of the same type through a `DEPENDS_ON` edge, for example requirement B depends on requirement A.
-
-- **Backend**: Go standard library `net/http` (Go 1.27+)
-- **Graph DB**: Neo4j (stores all project entities and relationships)
-- **Change log**: PostgreSQL (persists an append-only changelog for the changefeed)
-- **API spec**: OpenAPI 3.0.3 (`api/openapi.yaml`), code generated via `oapi-codegen`
+- **Backend**: Go standard library `net/http`
+- **Neo4j**: the Nodes and the Edges, the latest Change ID of each Changefeed, and an outbox of Change Entries
+- **PostgreSQL**: the Change Entries. Each write records its Change Entry in the outbox, in the same Neo4j transaction as its changes. The server then copies the Change Entry to PostgreSQL, in Change ID order, and wakes each open subscription of the Product.
 
 ## Quick start
 
-### Prerequisites
-
-- Go 1.27+
-- Docker and Docker Compose
-
-### 1. Start databases
+Prerequisites: Go 1.27+, Docker with Docker Compose.
 
 ```bash
-make docker-up
+docker compose up -d --build
 ```
 
-This starts Neo4j (bolt://localhost:7687, browser at http://localhost:7474) and PostgreSQL (localhost:5432).
+This starts the API (http://localhost:8080), Neo4j (bolt://localhost:7687, browser at http://localhost:7474), and PostgreSQL (localhost:5432). The API tries to start again every 2 s until Neo4j and PostgreSQL accept connections.
 
-The compose file uses Postgres 18, which can't open a `pg_data` volume created by Postgres 17 or earlier: the container exits and its log mentions `pg_upgrade`. To reset local data, run `docker compose down -v` (this also deletes the Neo4j data), or remove only the Postgres volume: find it with `docker volume ls` (it ends in `_pg_data`) and run `docker volume rm <name>`. To keep an existing changelog, export it with `pg_dump -Fc` from Postgres 17 and import it with `pg_restore` after the upgrade.
-
-### 2. Build and run
+To run the server outside Docker, against the databases of the stack:
 
 ```bash
-cp .env.example .env   # adjust if needed
-make run
-```
-
-The server starts on http://localhost:8080.
-
-### 3. Verify
-
-```bash
-curl http://localhost:8080/health
-# {"status":"ok"}
+docker compose stop api
+make build
+set -a; . ./.env.example; set +a
+./bin/server
 ```
 
 ## API examples
 
-Every example works in the namespace `acme`. See [Namespaces](#namespaces).
-
-### Create a vision
+Each request must give the user ID in the header `Nodoplex-User-Id`. Each write to a Node, or to an Edge, sends the `version` of the Node (for an Edge, of its Tail Node) that the client last read.
 
 ```bash
-curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"vision","title":"Become the #1 PM tool","description":"Our north star"}' | jq
+H='Nodoplex-User-Id: alice'
+
+# Create a Product. The slug is 3 or more labels, e.g. com.example.language-app
+curl -s -X PUT -H "$H" localhost:8080/products/com.example.language-app \
+  -d '{"fields":{"title":"A language-learning app"}}'
+
+# Create a Vision under the Product (each Node except a Product names its Parents)
+curl -s -X POST -H "$H" localhost:8080/products/com.example.language-app/nodes \
+  -d '{"type":"vision","parents":[{"id":"<product-id>"}],"fields":{"title":"Make learning fun"}}'
+
+# Task B depends on Task A
+curl -s -X POST -H "$H" localhost:8080/products/com.example.language-app/edges \
+  -d '{"kind":"dependency","tailId":"<task-b-id>","headId":"<task-a-id>","version":<task-b-version>}'
+
+# Set the status of a leaf. Nodoplex derives the status of each other Node
+curl -s -X PATCH -H "$H" localhost:8080/products/com.example.language-app/nodes/<task-id> \
+  -d '{"version":<version>,"fields":{"status":"in_progress"}}'
+
+# The Tasks that are not_started and not blocked, 50 at a time
+curl -s -H "$H" 'localhost:8080/products/com.example.language-app/nodes?type=task&status=not_started&blocked=false'
+
+# The next available leaf
+curl -s -H "$H" localhost:8080/products/com.example.language-app/next-work
+
+# Archive a Node
+curl -s -X POST -H "$H" localhost:8080/products/com.example.language-app/nodes/<id>/archive -d '{"version":<version>}'
 ```
 
-### Create a goal under the vision
+## Changefeed
 
 ```bash
-curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"goal","title":"Launch MVP by Q3"}' | jq
+# The Change Entries after Change ID 0, at most 100
+curl -s -H "$H" 'localhost:8080/products/com.example.language-app/poll?startChangeId=0&limit=100'
+
+# Only the Change Entries after which a Task is done
+curl -s -G -H "$H" localhost:8080/products/com.example.language-app/poll \
+  --data-urlencode startChangeId=0 --data-urlencode limit=100 \
+  --data-urlencode 'filterGroups=[{"type":["task"],"status":{"check":"after","values":["done"]}}]'
+
+# Server-sent events: each new Change Entry, as it happens
+curl -N -H "$H" localhost:8080/products/com.example.language-app/subscribe
+
+# Each Change Entry after Change ID 42, then each new one
+curl -N -H "$H" -H 'Last-Event-ID: 42' localhost:8080/products/com.example.language-app/subscribe
 ```
 
-### Link them
+The `id` of each event is the Change ID of its Change Entry. A browser `EventSource` can't set headers, so it can give the user ID in the query parameter `userId`.
 
-```bash
-curl -s -X POST http://localhost:8080/namespaces/acme/edges \
-  -H 'Content-Type: application/json' \
-  -d '{"sourceId":"<vision-id>","targetId":"<goal-id>","type":"BREAKS_DOWN_TO"}' | jq
-```
+## Health checks
 
-### Create a feature with priority
+Each health check needs no user ID, and sends status 200 and no body, or status 503 and the code `unavailable`:
 
-```bash
-curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"feature","title":"SSO integration","priority":1}' | jq
-```
+- `GET /livez`: 200 whenever the server can answer an HTTP request
+- `GET /startupz`: 200 after the server has connected to Neo4j and PostgreSQL, and has created its constraints, indexes, and tables
+- `GET /readyz`: 200 if the server has started, and a query to Neo4j and a query to PostgreSQL both succeed within 2 s each
 
-### Create a task
+## Configuration
 
-```bash
-curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"task","title":"Implement OIDC flow","status":"backlog"}' | jq
-```
+| Environment variable                    | Default      | Meaning                                                                                           |
+| --------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------- |
+| `PORT`                                  | `8080`       | the HTTP port                                                                                     |
+| `NEO4J_URI`                             | none         | e.g. `bolt://localhost:7687`                                                                      |
+| `NEO4J_USER`, `NEO4J_PASSWORD`          | none         | the Neo4j credentials                                                                             |
+| `POSTGRES_URL`                          | none         | e.g. `postgres://nodoplex:changeme@localhost:5432/nodoplex`                                       |
+| `NODOPLEX_EXPOSE_CHANGEFEED`            | `true`       | `false` refuses poll and subscribe                                                                |
+| `NODOPLEX_CHANGE_ENTRY_COUNT_TARGET`    | `1000000`    | above this number of Change Entries of all Products, a background job deletes the oldest ones     |
+| `NODOPLEX_CHANGE_ENTRY_SIZE_TARGET`     | `1073741824` | above this total size, in bytes, a background job deletes the oldest Change Entries              |
+| `NODOPLEX_DELETE_OLD_CHANGE_ENTRIES`    | `true`       | `false` keeps every Change Entry                                                                  |
 
-### Attach an output to a task
+The server doesn't start if a variable has a value that isn't valid, or if a variable with no default isn't set.
 
-```bash
-curl -s -X POST http://localhost:8080/namespaces/acme/nodes \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"output","outputType":"git","description":"Branch with the OIDC flow","payload":{"repository":"https://github.com/d4nyll/nodoplex.git","baseRef":"main","currentRef":"feat/oidc"}}' | jq
-
-curl -s -X POST http://localhost:8080/namespaces/acme/edges \
-  -H 'Content-Type: application/json' \
-  -d '{"sourceId":"<task-id>","targetId":"<output-id>","type":"IMPLEMENTED_BY"}' | jq
-```
-
-### Record that one requirement depends on another
-
-```bash
-curl -s -X POST http://localhost:8080/namespaces/acme/edges \
-  -H 'Content-Type: application/json' \
-  -d '{"sourceId":"<requirement-b-id>","targetId":"<requirement-a-id>","type":"DEPENDS_ON"}' | jq
-
-# What requirement B depends on, and what depends on requirement A
-curl -s http://localhost:8080/namespaces/acme/nodes/<requirement-b-id>/dependencies | jq
-curl -s http://localhost:8080/namespaces/acme/nodes/<requirement-a-id>/dependents | jq
-```
-
-### List features
-
-```bash
-curl -s 'http://localhost:8080/namespaces/acme/nodes?type=feature' | jq
-```
-
-### Get a node with its relationships
-
-```bash
-curl -s http://localhost:8080/namespaces/acme/nodes/<id> | jq
-```
-
-### Get the full subtree from a vision
-
-```bash
-curl -s http://localhost:8080/namespaces/acme/nodes/<vision-id>/subtree | jq
-```
-
-### Trace lineage from a task up to the root vision
-
-```bash
-curl -s http://localhost:8080/namespaces/acme/nodes/<task-id>/lineage | jq
-```
-
-### Subscribe to changes (SSE)
-
-```bash
-# All changes in the namespace
-curl -N http://localhost:8080/namespaces/acme/subscribe
-
-# Only feature and task changes
-curl -N 'http://localhost:8080/namespaces/acme/subscribe?type=feature&type=task'
-
-# Changes after changeId 42 from the changelog, then live changes
-curl -N -H 'Last-Event-ID: 42' http://localhost:8080/namespaces/acme/subscribe
-```
-
-The SSE id of each event is its changeId. A browser `EventSource` sends the last id it received in the `Last-Event-ID` header when it reconnects, so it receives the changes it missed before live changes resume.
-
-### Poll changes since a changeId
-
-```bash
-curl -s 'http://localhost:8080/namespaces/acme/changes?type=feature&since=0&limit=50' | jq
-```
-
-## API documentation
-
-The full OpenAPI spec is at [`api/openapi.yaml`](api/openapi.yaml). You can view it in any OpenAPI viewer (e.g. Swagger UI, Redocly).
-
-### Namespaces
-
-Every node belongs to exactly one namespace. A namespace is an opaque string that the caller picks, and Nodoplex attaches no meaning to it. It can be 1 to 256 characters long and may contain ASCII letters, digits, hyphens (`-`), underscores (`_`), colons (`:`) and periods (`.`), but can't start or end with a period. A node gets the namespace of the request that creates it, and the namespace never changes.
-
-A request carries its namespace as the first path segment: every API path starts with `/namespaces/{namespace}/`, for example `GET /namespaces/acme/nodes/{id}`. Only `/health` sits outside a namespace. Nodoplex uses a path prefix rather than a header for three reasons:
-
-- The OpenAPI spec declares the namespace as a required path parameter on every operation, so the generated server passes it to every handler as an argument. A handler that ignores it doesn't compile.
-- Browsers can't set custom headers on an `EventSource`, so a header couldn't carry the namespace for `/subscribe`.
-- The namespace shows up in every URL, so access logs and proxies see which namespace a request touched.
-
-Every operation sees only its own namespace:
-
-- Reads, lists, traversals, edge creation and deletion return 404 for a node in another namespace, with the same body as for a node that doesn't exist.
-- An edge can only connect two nodes in the request's namespace, so no edge crosses namespaces.
-- `/changes` and `/subscribe` only return changes made in the request's namespace. Change ids come from one sequence shared by all namespaces, so the ids a namespace sees have gaps where other namespaces made changes.
-- A request to an unprefixed path such as `/nodes`, or with an empty namespace such as `/namespaces//nodes`, gets a 400. So does a namespace that is too long, contains any other character (for example `/`, `@`, a space or a non-ASCII letter, encoded or not), or starts or ends with a period. The error message names the rule that the namespace breaks, for example `namespace contains '/', which is not allowed; ...`.
-
-Nodes carry a `:Node` label and a `namespace` property in Neo4j. Lookups by id seek the unique constraint on `(:Node).id` and lists seek the index on `(:Node).namespace`; `NODOPLEX_INTEGRATION=1 go test ./internal/graph -run Integration` checks the query plans.
-
-### Dependencies
-
-A `DEPENDS_ON` edge from node B to node A means B depends on A. `POST /namespaces/{namespace}/edges` with `"type":"DEPENDS_ON"` creates one:
-
-- Both nodes must be in the request's namespace (404 otherwise) and have the same type (400 otherwise).
-- A node can't depend on itself (400).
-- An edge that would close a cycle of `DEPENDS_ON` edges gets a 409, whether the cycle is direct (A depends on B, B on A) or runs through other nodes.
-- Creating an edge that already exists returns 201 and leaves the single existing edge in place, so a client can retry safely.
-
-Concurrent requests can't form a cycle between them: the server checks for a cycle and creates the edge in one transaction that holds a per-namespace lock, so dependency creations in one namespace run one at a time.
-
-`GET /namespaces/{namespace}/nodes/{id}/dependencies` lists the nodes a node depends on, and `GET /namespaces/{namespace}/nodes/{id}/dependents` lists the nodes that depend on it. `DELETE /namespaces/{namespace}/edges` removes a `DEPENDS_ON` edge like any other, and deleting a node removes its `DEPENDS_ON` edges. Children, parents, subtree, and lineage follow `BREAKS_DOWN_TO` and `IMPLEMENTED_BY` only, so `DEPENDS_ON` edges never appear in them.
-
-The changelog, `/changes` and `/subscribe` record node changes only. Creating or deleting an edge of any type writes no changelog entry and sends no event.
-
-### Outputs
-
-An Output node records something a task produced, such as a Git branch, a document or a deployment. An `IMPLEMENTED_BY` edge from the task attaches it, and a task is the only node type that can be its parent. An Output has these fields:
-
-- `outputType`: a non-empty string that names the kind of output, for example `git`. Nodoplex doesn't interpret it. The node type stays in `type`, which is `output`.
-- `description`: text that says what the output is.
-- `payload`: any JSON object. Nodoplex stores it and returns it unchanged, without interpreting or validating it. `PATCH` replaces the whole payload.
-
-An output with `outputType` `git` uses this payload shape (`GitOutputPayload` in the OpenAPI spec):
-
-```json
-{
-  "repository": "https://github.com/d4nyll/nodoplex.git",
-  "baseRef": "main",
-  "currentRef": "feat/oidc"
-}
-```
-
-- `repository`: the Git remote URL.
-- `baseRef`: the Git ref the work started from.
-- `currentRef`: the Git ref that holds the work, for example a branch name or a commit SHA.
-
-### Assigning a namespace to existing nodes
-
-Nodes created before namespaces existed have no namespace. The server never returns them, and logs a warning with their count at startup. To move all of them, and their changelog entries, into one namespace, run the server once with `-assign-namespace` against the same databases:
-
-```bash
-go run ./cmd/server -assign-namespace=acme
-# assign-namespace: moved 4 nodes and 5 changelog entries into namespace "acme"
-
-# or, with Docker Compose
-docker compose run --rm api -assign-namespace=acme
-```
-
-The command exits after the migration. It only touches nodes and changelog entries that have no namespace, so running it again changes nothing.
+Only one server process may use a pair of databases at a time, because the server serializes the writes of each Product with locks in its own process.
 
 ## Development
 
 ```bash
-# Regenerate code from OpenAPI spec
-make generate
-
-# Build
-make build
-
-# Run tests
-make test
-
-# Run the integration tests too, against the databases from `make docker-up`
-NODOPLEX_INTEGRATION=1 go test ./...
-
-# Stop databases
-make docker-down
+make generate   # write internal/api/generated.go from api/openapi.yaml
+go build ./...
+go test ./...   # unit tests
 ```
+
+The integration tests run against Neo4j and PostgreSQL. Each test uses its own PostgreSQL schema and its own Products. Stop the API of the stack first, because its outbox copier would copy the Change Entries of the tests:
+
+```bash
+docker compose up -d neo4j postgres
+docker compose stop api
+NODOPLEX_INTEGRATION=1 go test ./... -count=1
+```
+
+The [`bruno/`](bruno/) directory holds a [Bruno](https://www.usebruno.com/) collection of the operations.
 
 ## Project structure
 
 ```
-nodoplex/
-  api/
-    openapi.yaml           # OpenAPI 3.0.3 spec (source of truth)
-    oapi-codegen.yaml      # Code generation config
-  cmd/server/
-    main.go                # Entry point
-  internal/
-    api/
-      generated.go         # Generated types + server interface
-      handlers.go          # ServerInterface implementation
-      convert.go           # Type conversion helpers
-    changelog/
-      store.go             # PostgreSQL changelog repository
-      migrations.go        # Schema migration
-    config/
-      config.go            # Environment-based configuration
-    db/
-      neo4j.go             # Neo4j driver setup
-      postgres.go          # PostgreSQL pool setup
-    events/
-      bus.go               # In-memory pub/sub event bus
-    graph/
-      models.go            # Domain models
-      repository.go        # Neo4j Cypher queries
-      service.go           # Business logic
+cmd/server/         entry point
+internal/
+  api/              HTTP: routes, request checks, operations, server-sent events
+  changefeed/       filter groups of the Changefeed, and the signals to subscriptions
+  config/           configuration from the environment
+  db/               Neo4j and PostgreSQL connections
+  graph/            the part of the graph of a Product that an operation reads, in memory:
+                    rules, operation steps, Change Entries
+    graphtest/      generated graphs and operations for the tests that compare partial
+                    graphs with whole graphs
+  store/            Neo4j and PostgreSQL storage, the outbox, retention
 ```
