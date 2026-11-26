@@ -1,0 +1,15 @@
+meta {
+  name: Get Latest Change ID
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/products/{{slug}}/latest-change-id
+  body: none
+  auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}

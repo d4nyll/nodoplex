@@ -1,0 +1,15 @@
+meta {
+  name: Watch Node
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/products/{{slug}}/nodes/{{nodeId}}/watch
+  body: none
+  auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}

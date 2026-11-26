@@ -1,23 +1,19 @@
 meta {
   name: Delete Edge
   type: http
-  seq: 2
+  seq: 4
 }
 
 delete {
-  url: {{baseUrl}}/namespaces/{{namespace}}/edges
-  body: json
+  url: {{baseUrl}}/products/{{slug}}/edges/{{edgeId}}
+  body: none
   auth: none
 }
 
 headers {
-  Content-Type: application/json
+  Nodoplex-User-Id: {{userId}}
 }
 
-body:json {
-  {
-    "sourceId": "{{sourceNodeId}}",
-    "targetId": "{{targetNodeId}}",
-    "type": "BREAKS_DOWN_TO"
-  }
+params:query {
+  version: {{version}}
 }

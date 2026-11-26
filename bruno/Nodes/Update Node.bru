@@ -1,22 +1,22 @@
 meta {
   name: Update Node
   type: http
-  seq: 9
+  seq: 5
 }
 
 patch {
-  url: {{baseUrl}}/namespaces/{{namespace}}/nodes/{{nodeId}}
+  url: {{baseUrl}}/products/{{slug}}/nodes/{{nodeId}}
   body: json
   auth: none
 }
 
 headers {
-  Content-Type: application/json
+  Nodoplex-User-Id: {{userId}}
 }
 
 body:json {
   {
-    "title": "Updated title",
-    "description": "Updated description"
+    "version": {{version}},
+    "fields": { "status": "in_progress", "assignee": "{{userId}}" }
   }
 }

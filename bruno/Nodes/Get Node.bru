@@ -1,11 +1,19 @@
 meta {
   name: Get Node
   type: http
-  seq: 8
+  seq: 2
 }
 
 get {
-  url: {{baseUrl}}/namespaces/{{namespace}}/nodes/{{nodeId}}
+  url: {{baseUrl}}/products/{{slug}}/nodes/{{nodeId}}
   body: none
   auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}
+
+params:query {
+  ~includeArchived: true
 }

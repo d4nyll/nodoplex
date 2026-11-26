@@ -1,19 +1,28 @@
 meta {
   name: List Nodes
   type: http
-  seq: 7
+  seq: 3
 }
 
 get {
-  url: {{baseUrl}}/namespaces/{{namespace}}/nodes
+  url: {{baseUrl}}/products/{{slug}}/nodes
   body: none
   auth: none
 }
 
+headers {
+  Nodoplex-User-Id: {{userId}}
+}
+
 params:query {
-  ~type: feature
-  ~status: backlog
-  ~search: SSO
-  ~offset: 0
+  ~type: task
+  ~status: not_started
+  ~archived: false
+  ~blocked: false
+  ~childrenOf: {{parentId}}
+  ~sort: lastUpdated
+  ~direction: descending
+  ~startAfterKey: 0
+  ~startAfterId: {{nodeId}}
   ~limit: 50
 }

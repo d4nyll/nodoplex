@@ -1,0 +1,15 @@
+meta {
+  name: Get Next Work
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/products/{{slug}}/next-work
+  body: none
+  auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}

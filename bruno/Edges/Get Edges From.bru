@@ -1,0 +1,19 @@
+meta {
+  name: Get Edges From
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/products/{{slug}}/nodes/{{nodeId}}/edges-from
+  body: none
+  auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}
+
+params:query {
+  ~includeArchived: true
+}

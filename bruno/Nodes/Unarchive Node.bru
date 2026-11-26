@@ -1,0 +1,21 @@
+meta {
+  name: Unarchive Node
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/products/{{slug}}/nodes/{{nodeId}}/unarchive
+  body: json
+  auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}
+
+body:json {
+  {
+    "version": {{version}}
+  }
+}

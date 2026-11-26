@@ -1,0 +1,21 @@
+meta {
+  name: Create Product
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/products/{{slug}}
+  body: json
+  auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}
+
+body:json {
+  {
+    "fields": { "title": "A language-learning app" }
+  }
+}

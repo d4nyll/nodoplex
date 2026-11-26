@@ -1,0 +1,20 @@
+meta {
+  name: Subscribe
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/products/{{slug}}/subscribe
+  body: none
+  auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}
+
+params:query {
+  ~startChangeId: 0
+  ~filterGroups: [{"type":["task"]}]
+}

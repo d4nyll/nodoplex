@@ -1,0 +1,23 @@
+meta {
+  name: Create Node
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/products/{{slug}}/nodes
+  body: json
+  auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}
+
+body:json {
+  {
+    "type": "vision",
+    "parents": [{ "id": "{{parentId}}" }],
+    "fields": { "title": "Make learning a language fun" }
+  }
+}

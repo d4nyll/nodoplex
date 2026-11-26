@@ -5,24 +5,20 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/namespaces/{{namespace}}/edges
+  url: {{baseUrl}}/products/{{slug}}/edges
   body: json
   auth: none
 }
 
 headers {
-  Content-Type: application/json
+  Nodoplex-User-Id: {{userId}}
 }
 
 body:json {
   {
-    "sourceId": "{{sourceNodeId}}",
-    "targetId": "{{targetNodeId}}",
-    "type": "BREAKS_DOWN_TO"
+    "kind": "dependency",
+    "tailId": "{{nodeId}}",
+    "headId": "{{parentId}}",
+    "version": {{version}}
   }
-}
-
-vars:pre-request {
-  sourceNodeId: d53279b0-befe-4df5-9a49-a870f7f40391
-  targetNodeId: b64b9033-953d-4f5f-a48a-133aa10ea0a4
 }

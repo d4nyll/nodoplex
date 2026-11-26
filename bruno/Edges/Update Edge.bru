@@ -1,0 +1,22 @@
+meta {
+  name: Update Edge
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/products/{{slug}}/edges/{{edgeId}}
+  body: json
+  auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}
+
+body:json {
+  {
+    "priority": 1,
+    "version": {{version}}
+  }
+}

@@ -1,11 +1,19 @@
 meta {
   name: Delete Node
   type: http
-  seq: 10
+  seq: 9
 }
 
 delete {
-  url: {{baseUrl}}/namespaces/{{namespace}}/nodes/{{nodeId}}
+  url: {{baseUrl}}/products/{{slug}}/nodes/{{nodeId}}
   body: none
   auth: none
+}
+
+headers {
+  Nodoplex-User-Id: {{userId}}
+}
+
+params:query {
+  version: {{version}}
 }
